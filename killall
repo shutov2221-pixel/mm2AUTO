@@ -1,0 +1,763 @@
+--!strict
+-- =====================================================================
+-- MM2 KILL ALL [DIAGNOSTIC & STANDALONE TEST SCRIPT]
+-- Отдельный скрипт для глубокой диагностики, тестирования таргета,
+-- экипировки ножа и выполнения Kill All с детальными логами в GUI
+-- =====================================================================
+
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local RunService = game:GetService("RunService")
+local VirtualUser = game:GetService("VirtualUser")
+
+while not Players.LocalPlayer do task.wait(0.1) end
+local LocalPlayer = Players.LocalPlayer
+
+-- Флаги работы
+local isRunning = false
+local isTerminated = false
+local activeConnections: { RBXScriptConnection } = {}
+
+local function RegisterConnection(conn: RBXScriptConnection)
+    table.insert(activeConnections, conn)
+    return conn
+end
+
+-- =====================================================================
+-- GUI ИНТЕРФЕЙС И СИСТЕМА ЛОГИРОВАНИЯ
+-- =====================================================================
+local function GetSafeGuiParent()
+    local success, result = pcall(function() return gethui() end)
+    if success and result then return result end
+    local coreSuccess, coreResult = pcall(function() return game:GetService("CoreGui") end)
+    if coreSuccess and coreResult then return coreResult end
+    return LocalPlayer:WaitForChild("PlayerGui")
+end
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "MM2_KillAll_Debug_Gui"
+ScreenGui.Parent = GetSafeGuiParent()
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
+
+-- Главное окно
+local MainFrame = Instance.new("Frame", ScreenGui)
+MainFrame.Name = "MainFrame"
+MainFrame.Size = UDim2.new(0, 420, 0, 480)
+MainFrame.Position = UDim2.new(0.5, -210, 0.35, -240)
+MainFrame.BackgroundColor3 = Color3.fromRGB(22, 22, 28)
+MainFrame.BorderSizePixel = 0
+MainFrame.ClipsDescendants = true
+MainFrame.Active = true
+Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
+
+-- Верхняя панель (TitleBar)
+local TitleBar = Instance.new("Frame", MainFrame)
+TitleBar.Name = "TitleBar"
+TitleBar.Size = UDim2.new(1, 0, 0, 36)
+TitleBar.BackgroundColor3 = Color3.fromRGB(35, 95, 215)
+TitleBar.BorderSizePixel = 0
+TitleBar.Active = true
+Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 10)
+
+local TitleFix = Instance.new("Frame", TitleBar)
+TitleFix.Size = UDim2.new(1, 0, 0.5, 0)
+TitleFix.Position = UDim2.new(0, 0, 0.5, 0)
+TitleFix.BackgroundColor3 = Color3.fromRGB(35, 95, 215)
+TitleFix.BorderSizePixel = 0
+
+local TitleLabel = Instance.new("TextLabel", TitleBar)
+TitleLabel.Size = UDim2.new(1, -40, 1, 0)
+TitleLabel.Position = UDim2.new(0, 12, 0, 0)
+TitleLabel.BackgroundTransparency = 1
+TitleLabel.Text = "MM2 KILL ALL [ДИАГНОСТИКА & ТЕСТ]"
+TitleLabel.TextColor3 = Color3.new(1, 1, 1)
+TitleLabel.Font = Enum.Font.GothamBold
+TitleLabel.TextSize = 13
+TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+local CloseBtn = Instance.new("TextButton", TitleBar)
+CloseBtn.Size = UDim2.new(0, 26, 0, 26)
+CloseBtn.Position = UDim2.new(1, -30, 0.5, -13)
+CloseBtn.BackgroundColor3 = Color3.fromRGB(215, 45, 45)
+CloseBtn.Text = "✕"
+CloseBtn.TextColor3 = Color3.new(1, 1, 1)
+CloseBtn.Font = Enum.Font.GothamBold
+CloseBtn.TextSize = 14
+CloseBtn.Active = true
+Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 6)
+
+-- Перетаскивание окна (Dragging)
+local dragging, dragInput, dragStart, startPos
+RegisterConnection(TitleBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = MainFrame.Position
+        local endConn
+        endConn = input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+                if endConn then endConn:Disconnect() end
+            end
+        end)
+    end
+end))
+
+RegisterConnection(TitleBar.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        dragInput = input
+    end
+end))
+
+RegisterConnection(RunService.RenderStepped:Connect(function()
+    if dragging and dragInput and not isTerminated then
+        local delta = dragInput.Position - dragStart
+        MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+end))
+
+-- Кнопки действий
+local ControlsFrame = Instance.new("Frame", MainFrame)
+ControlsFrame.Size = UDim2.new(1, -16, 0, 80)
+ControlsFrame.Position = UDim2.new(0, 8, 0, 44)
+ControlsFrame.BackgroundTransparency = 1
+
+local function CreateButton(text, color, pos, size, parent)
+    local btn = Instance.new("TextButton", parent)
+    btn.Size = size
+    btn.Position = pos
+    btn.BackgroundColor3 = color
+    btn.Text = text
+    btn.TextColor3 = Color3.new(1, 1, 1)
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 12
+    btn.Active = true
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+    return btn
+end
+
+local BtnScan = CreateButton("🔍 СКАН TARGET", Color3.fromRGB(30, 140, 200), UDim2.new(0, 0, 0, 0), UDim2.new(0.5, -4, 0, 36), ControlsFrame)
+local BtnEquip = CreateButton("🗡 ВЗЯТЬ НОЖ", Color3.fromRGB(180, 120, 30), UDim2.new(0.5, 4, 0, 0), UDim2.new(0.5, -4, 0, 36), ControlsFrame)
+local BtnKill = CreateButton("⚡ KILL ALL: СТАРТ", Color3.fromRGB(200, 50, 50), UDim2.new(0, 0, 0, 42), UDim2.new(0.7, -4, 0, 36), ControlsFrame)
+local BtnClear = CreateButton("🗑 ОЧИСТИТЬ", Color3.fromRGB(60, 60, 70), UDim2.new(0.7, 4, 0, 42), UDim2.new(0.3, -4, 0, 36), ControlsFrame)
+
+-- Статус-бар под кнопками
+local StatusFrame = Instance.new("Frame", MainFrame)
+StatusFrame.Size = UDim2.new(1, -16, 0, 26)
+StatusFrame.Position = UDim2.new(0, 8, 0, 130)
+StatusFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 38)
+Instance.new("UICorner", StatusFrame).CornerRadius = UDim.new(0, 6)
+
+local StatusLabel = Instance.new("TextLabel", StatusFrame)
+StatusLabel.Size = UDim2.new(1, -10, 1, 0)
+StatusLabel.Position = UDim2.new(0, 5, 0, 0)
+StatusLabel.BackgroundTransparency = 1
+StatusLabel.Text = "> Готов к тестированию"
+StatusLabel.TextColor3 = Color3.fromRGB(180, 220, 255)
+StatusLabel.Font = Enum.Font.GothamSemibold
+StatusLabel.TextSize = 12
+StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+local function UpdateStatus(text, color)
+    if isTerminated then return end
+    StatusLabel.Text = "> " .. text
+    StatusLabel.TextColor3 = color or Color3.fromRGB(220, 220, 220)
+end
+
+-- Окно консоли логов
+local ConsoleFrame = Instance.new("Frame", MainFrame)
+ConsoleFrame.Size = UDim2.new(1, -16, 1, -170)
+ConsoleFrame.Position = UDim2.new(0, 8, 0, 162)
+ConsoleFrame.BackgroundColor3 = Color3.fromRGB(14, 14, 18)
+Instance.new("UICorner", ConsoleFrame).CornerRadius = UDim.new(0, 6)
+
+local LogScroll = Instance.new("ScrollingFrame", ConsoleFrame)
+LogScroll.Size = UDim2.new(1, -8, 1, -8)
+LogScroll.Position = UDim2.new(0, 4, 0, 4)
+LogScroll.BackgroundTransparency = 1
+LogScroll.BorderSizePixel = 0
+LogScroll.ScrollBarThickness = 5
+LogScroll.ScrollBarImageColor3 = Color3.fromRGB(80, 80, 100)
+LogScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+
+local LogLayout = Instance.new("UIListLayout", LogScroll)
+LogLayout.SortOrder = Enum.SortOrder.LayoutOrder
+LogLayout.Padding = UDim.new(0, 3)
+
+local logCount = 0
+local MAX_LOGS = 120
+
+-- Функция добавления лога
+local function Log(msg: string, msgType: string?)
+    if isTerminated then return end
+    logCount = logCount + 1
+
+    local timeStr = os.date("%X")
+    local typeColor = Color3.fromRGB(210, 210, 210)
+    local prefix = "[INFO]"
+
+    if msgType == "SUCCESS" then
+        typeColor = Color3.fromRGB(100, 255, 120)
+        prefix = "[OK]"
+    elseif msgType == "WARN" then
+        typeColor = Color3.fromRGB(255, 200, 50)
+        prefix = "[WARN]"
+    elseif msgType == "ERROR" then
+        typeColor = Color3.fromRGB(255, 80, 80)
+        prefix = "[ERR]"
+    elseif msgType == "TARGET" then
+        typeColor = Color3.fromRGB(80, 220, 255)
+        prefix = "[TARGET]"
+    elseif msgType == "KILL" then
+        typeColor = Color3.fromRGB(255, 100, 255)
+        prefix = "[KILL]"
+    end
+
+    local fullText = string.format("[%s] %s %s", timeStr, prefix, msg)
+    print("[MM2 DEBUG] " .. fullText)
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -5, 0, 0)
+    lbl.AutomaticSize = Enum.AutomaticSize.Y
+    lbl.BackgroundTransparency = 1
+    lbl.Text = fullText
+    lbl.TextColor3 = typeColor
+    lbl.Font = Enum.Font.Code
+    lbl.TextSize = 11
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.TextWrapped = true
+    lbl.LayoutOrder = logCount
+    lbl.Parent = LogScroll
+
+    -- Ограничение количества строк
+    local children = LogScroll:GetChildren()
+    if #children > MAX_LOGS then
+        for i = 1, #children - MAX_LOGS do
+            if children[i]:IsA("TextLabel") then
+                children[i]:Destroy()
+            end
+        end
+    end
+
+    -- Авто-скролл вниз
+    task.defer(function()
+        LogScroll.CanvasPosition = Vector2.new(0, LogLayout.AbsoluteContentSize.Y)
+    end)
+end
+
+local function ClearLogs()
+    for _, child in ipairs(LogScroll:GetChildren()) do
+        if child:IsA("TextLabel") then
+            child:Destroy()
+        end
+    end
+    logCount = 0
+    Log("Логи очищены", "INFO")
+end
+
+-- =====================================================================
+-- ПОИСК ЭЛЕМЕНТА ТАРГЕТА В ИНТЕРФЕЙСЕ (СКАНЕР)
+-- =====================================================================
+local function FindTargetLabel(): (TextLabel?, string)
+    local pGui = LocalPlayer:FindFirstChildOfClass("PlayerGui") or LocalPlayer:FindFirstChild("PlayerGui")
+    if not pGui then
+        return nil, "PlayerGui не найден!"
+    end
+
+    -- 1. Проверяем точный путь: MainGUI.Game.AssassinTarget.TargetName
+    local mGui = pGui:FindFirstChild("MainGUI")
+    if mGui then
+        local gameObj = mGui:FindFirstChild("Game")
+        if gameObj then
+            local targetFrame = gameObj:FindFirstChild("AssassinTarget")
+            if targetFrame then
+                local label = targetFrame:FindFirstChild("TargetName")
+                if label and label:IsA("TextLabel") then
+                    return label, "MainGUI.Game.AssassinTarget.TargetName (Точный путь)"
+                end
+            end
+        end
+    end
+
+    -- 2. Резервный поиск: AssassinTarget в любом месте PlayerGui
+    local altFrame = pGui:FindFirstChild("AssassinTarget", true)
+    if altFrame then
+        local label = altFrame:FindFirstChild("TargetName")
+        if label and label:IsA("TextLabel") then
+            return label, altFrame:GetFullName() .. ".TargetName (Поиск по AssassinTarget)"
+        end
+    end
+
+    -- 3. Резервный поиск: любой TextLabel с именем TargetName
+    local anyLabel = pGui:FindFirstChild("TargetName", true)
+    if anyLabel and anyLabel:IsA("TextLabel") then
+        return anyLabel, anyLabel:GetFullName() .. " (Поиск по TargetName)"
+    end
+
+    return nil, "Элемент не найден в дереве PlayerGui"
+end
+
+-- Очистка текста от скобок [], кавычек, префиксов
+local function CleanNickname(raw: string): string
+    if not raw then return "" end
+    local cleaned = raw
+    -- Удаляем квадратные скобки [ ], кавычки, круглые скобки
+    cleaned = string.gsub(cleaned, "[%[%]%<%>%(%)\"\'%{催]", "")
+    -- Удаляем префиксы "Target:", "Eliminate:", "@"
+    cleaned = string.gsub(cleaned, "^%s*[Tt]arget[:%s]*", "")
+    cleaned = string.gsub(cleaned, "^%s*[Ee]liminate[:%s]*", "")
+    cleaned = string.gsub(cleaned, "^%s*@?", "")
+    -- Удаляем пробелы по краям
+    cleaned = string.gsub(cleaned, "^%s*(.-)%s*$", "%1")
+    return cleaned
+end
+
+-- Поиск игрока в списке Players
+local function FindPlayerByName(cleanName: string): (Player?, string)
+    if cleanName == "" or cleanName == "Label" or cleanName == "None" then
+        return nil, "Имя пусто или заглушка ('" .. tostring(cleanName) .. "')"
+    end
+
+    -- 1. Точный поиск по Username
+    local exact = Players:FindFirstChild(cleanName)
+    if exact then
+        return exact, "Точное совпадение по Name"
+    end
+
+    -- 2. Регистронезависимый поиск по Name и DisplayName
+    local lowerClean = string.lower(cleanName)
+    for _, pl in ipairs(Players:GetPlayers()) do
+        if pl ~= LocalPlayer then
+            if string.lower(pl.Name) == lowerClean then
+                return pl, "Совпадение по lower(Name)"
+            end
+            if string.lower(pl.DisplayName) == lowerClean then
+                return pl, "Совпадение по lower(DisplayName)"
+            end
+        end
+    end
+
+    -- 3. Частичный поиск (если ник урезан)
+    for _, pl in ipairs(Players:GetPlayers()) do
+        if pl ~= LocalPlayer then
+            if string.find(string.lower(pl.Name), lowerClean, 1, true) then
+                return pl, "Частичное совпадение с Name: " .. pl.Name
+            end
+            if string.find(string.lower(pl.DisplayName), lowerClean, 1, true) then
+                return pl, "Частичное совпадение с DisplayName: " .. pl.DisplayName
+            end
+        end
+    end
+
+    return nil, "Игрок '" .. cleanName .. "' не найден среди " .. #Players:GetPlayers() .. " игроков"
+end
+
+-- Полный диагностический скан таргета
+local function RunTargetScan()
+    Log("--- ЗАПУСК СКАНА ТАРГЕТА ---", "TARGET")
+
+    local label, pathInfo = FindTargetLabel()
+    if not label then
+        Log("ОШИБКА: " .. pathInfo, "ERROR")
+        UpdateStatus("Скан: TargetName не найден в UI", Color3.fromRGB(255, 80, 80))
+        return nil
+    end
+
+    Log("Найден UI элемент: " .. pathInfo, "SUCCESS")
+    Log(string.format("Параметры лейбла: Visible=%s, Parent.Visible=%s", tostring(label.Visible), tostring(label.Parent and label.Parent.Visible)), "INFO")
+
+    local rawText = label.Text
+    Log(string.format("Исходный текст (.Text): '%s'", tostring(rawText)), "TARGET")
+
+    local cleaned = CleanNickname(rawText)
+    Log(string.format("После очистки от скобок/префиксов: '%s'", cleaned), "TARGET")
+
+    if cleaned == "" or cleaned == "Label" or cleaned == "None" then
+        Log("Внимание: цель в лейбле отсутствует (раунд не начался или цель сменилась)", "WARN")
+        UpdateStatus("Скан: Цель отсутствует в UI", Color3.fromRGB(255, 200, 50))
+        return nil
+    end
+
+    local player, matchReason = FindPlayerByName(cleaned)
+    if not player then
+        Log("ОШИБКА ПОИСКА: " .. matchReason, "ERROR")
+        -- Выводим всех текущих игроков для наглядности
+        local list = {}
+        for _, p in ipairs(Players:GetPlayers()) do
+            table.insert(list, p.Name .. " (" .. p.DisplayName .. ")")
+        end
+        Log("Игроки на сервере: " .. table.concat(list, ", "), "INFO")
+        UpdateStatus("Скан: Игрок не найден на сервере", Color3.fromRGB(255, 100, 100))
+        return nil
+    end
+
+    Log(string.format("ИГРОК НАЙДЕН: %s (@%s) [%s]", player.DisplayName, player.Name, matchReason), "SUCCESS")
+
+    local char = player.Character
+    if not char then
+        Log("Предупреждение: Персонаж игрока не загружен (Character == nil)", "WARN")
+        UpdateStatus("Скан: Персонаж не загружен", Color3.fromRGB(255, 200, 50))
+        return nil
+    end
+
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    local hrp = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso") or char:FindFirstChild("UpperTorso") or char.PrimaryPart
+
+    local hp = hum and hum.Health or 0
+    local isAlive = hp > 0
+    Log(string.format("Статус цели: Здоровье=%.1f, Жив=%s, Корень=%s", hp, tostring(isAlive), hrp and hrp.Name or "НЕТ"), isAlive and "SUCCESS" or "WARN")
+
+    if hrp and LocalPlayer.Character and LocalPlayer.Character.PrimaryPart then
+        local dist = (hrp.Position - LocalPlayer.Character.PrimaryPart.Position).Magnitude
+        Log(string.format("Дистанция до цели: %.1f studs", dist), "INFO")
+    end
+
+    UpdateStatus("Скан: Цель " .. player.DisplayName .. " (HP: " .. math.floor(hp) .. ")", Color3.fromRGB(100, 255, 100))
+    return player
+end
+
+-- =====================================================================
+-- ТЕСТИРОВАНИЕ И ЭКИПИРОВКА НОЖА
+-- =====================================================================
+local function InspectAndEquipKnife(): Tool?
+    Log("--- ПРОВЕРКА ИНВЕНТАРЯ И ЭКИПИРОВКА НОЖА ---", "INFO")
+
+    local char = LocalPlayer.Character
+    if not char then
+        Log("Ошибка: Персонаж игрока не найден!", "ERROR")
+        return nil
+    end
+
+    -- 1. Проверяем, держим ли нож прямо сейчас
+    for _, item in ipairs(char:GetChildren()) do
+        if item:IsA("Tool") then
+            Log(string.format("Нож уже в руках: '%s' (Class: %s)", item.Name, item.ClassName), "SUCCESS")
+            UpdateStatus("Нож в руке: " .. item.Name, Color3.fromRGB(100, 255, 100))
+            return item
+        end
+    end
+
+    -- 2. Инспектируем рюкзак (Backpack)
+    local backpack = LocalPlayer:FindFirstChildOfClass("Backpack") or LocalPlayer:FindFirstChild("Backpack")
+    if not backpack then
+        Log("Ошибка: Backpack не найден у LocalPlayer!", "ERROR")
+        return nil
+    end
+
+    local allTools = {}
+    for _, item in ipairs(backpack:GetChildren()) do
+        table.insert(allTools, string.format("'%s' (%s)", item.Name, item.ClassName))
+    end
+    Log("Содержимое Backpack: " .. (#allTools > 0 and table.concat(allTools, ", ") or "ПУСТО"), "INFO")
+
+    -- 3. Ищем Tool ножа
+    local knife: Tool? = nil
+    knife = backpack:FindFirstChild("Knife") :: Tool?
+
+    if not knife then
+        for _, item in ipairs(backpack:GetChildren()) do
+            if item:IsA("Tool") and (item.Name == "Knife" or string.find(string.lower(item.Name), "knife")) then
+                knife = item
+                break
+            end
+        end
+    end
+
+    -- Резерв: любой доступный Tool в рюкзаке
+    if not knife then
+        knife = backpack:FindFirstChildOfClass("Tool")
+    end
+
+    if not knife then
+        Log("НОЖ НЕ НАЙДЕН: В Backpack нет инструментов (возможно вы не убийца/ассасин)", "WARN")
+        UpdateStatus("Нож не найден в инвентаре", Color3.fromRGB(255, 150, 50))
+        return nil
+    end
+
+    Log(string.format("Найден предмет ножа: '%s'. Пробую экипировать...", knife.Name), "INFO")
+
+    -- Пробуем официальный Humanoid:EquipTool
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        local equipOk, equipErr = pcall(function() hum:EquipTool(knife) end)
+        if equipOk then
+            Log("Вызов Humanoid:EquipTool выполнен", "INFO")
+        else
+            Log("Humanoid:EquipTool вернул ошибку: " .. tostring(equipErr), "WARN")
+        end
+    end
+
+    task.wait(0.05)
+
+    -- Если всё ещё не в персонаже — форсируем Parent
+    if knife.Parent ~= char then
+        Log("Форсирую перенос: knife.Parent = Character...", "INFO")
+        pcall(function() knife.Parent = char end)
+    end
+
+    task.wait(0.05)
+
+    if char:FindFirstChild(knife.Name) or char:FindFirstChildOfClass("Tool") then
+        Log("УСПЕХ: Нож успешно взят в руку!", "SUCCESS")
+        UpdateStatus("Нож взят: " .. knife.Name, Color3.fromRGB(100, 255, 100))
+        return knife
+    else
+        Log("ОШИБКА: Не удалось переместить нож в персонажа!", "ERROR")
+        UpdateStatus("Ошибка взятия ножа", Color3.fromRGB(255, 80, 80))
+        return nil
+    end
+end
+
+-- =====================================================================
+-- ОСНОВНОЙ ЦИКЛ УБИЙСТВА И ТЕЛЕПОРТАЦИИ (KILL ALL)
+-- =====================================================================
+local function StopKillLoop()
+    isRunning = false
+    BtnKill.Text = "⚡ KILL ALL: СТАРТ"
+    BtnKill.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+    UpdateStatus("Kill All остановлен", Color3.fromRGB(200, 200, 200))
+    Log("Цикл Kill All остановлен", "INFO")
+end
+
+local function KillTarget(targetPlayer: Player)
+    if not targetPlayer or not targetPlayer.Character then return end
+
+    local myChar = LocalPlayer.Character
+    if not myChar then return end
+
+    local myHRP = myChar:FindFirstChild("HumanoidRootPart") or myChar:FindFirstChild("Torso") or myChar.PrimaryPart
+    local myHum = myChar:FindFirstChildOfClass("Humanoid")
+    if not myHRP or not myHum or myHum.Health <= 0 then return end
+
+    local targetChar = targetPlayer.Character
+    local targetHRP = targetChar:FindFirstChild("HumanoidRootPart") or targetChar:FindFirstChild("Torso") or targetChar.PrimaryPart
+    local targetHum = targetChar:FindFirstChildOfClass("Humanoid")
+    if not targetHRP or not targetHum or targetHum.Health <= 0 then return end
+
+    Log(string.format("Телепорт к цели: %s (@%s)", targetPlayer.DisplayName, targetPlayer.Name), "KILL")
+    UpdateStatus("Атака: " .. targetPlayer.DisplayName, Color3.fromRGB(255, 80, 80))
+
+    -- Убеждаемся что нож в руке
+    local tool = myChar:FindFirstChildOfClass("Tool")
+    if not tool then
+        tool = InspectAndEquipKnife()
+    end
+
+    local attackStart = tick()
+
+    while isRunning and not isTerminated do
+        -- Таймаут 4 секунды на цель (чтобы не зависать)
+        if tick() - attackStart > 4 then
+            Log("Таймаут атаки (4с) на " .. targetPlayer.Name, "WARN")
+            break
+        end
+
+        -- Проверка нашего персонажа
+        myChar = LocalPlayer.Character
+        myHRP = myChar and (myChar:FindFirstChild("HumanoidRootPart") or myChar:FindFirstChild("Torso") or myChar.PrimaryPart)
+        myHum = myChar and myChar:FindFirstChildOfClass("Humanoid")
+        if not myChar or not myHRP or not myHum or myHum.Health <= 0 then
+            Log("Наш персонаж погиб во время атаки!", "ERROR")
+            break
+        end
+
+        -- Проверка персонажа цели: жива ли?
+        if not targetPlayer.Parent or not targetChar.Parent then
+            Log("Цель покинула игру", "SUCCESS")
+            break
+        end
+
+        targetHum = targetChar:FindFirstChildOfClass("Humanoid")
+        targetHRP = targetChar:FindFirstChild("HumanoidRootPart") or targetChar:FindFirstChild("Torso") or targetChar.PrimaryPart
+        if not targetHum or targetHum.Health <= 0 or not targetHRP then
+            Log("ЦЕЛЬ УНИЧТОЖЕНА: " .. targetPlayer.DisplayName, "SUCCESS")
+            break
+        end
+
+        -- Проверка: не сменился ли таргет в UI
+        local label = FindTargetLabel()
+        if label then
+            local currentClean = CleanNickname(label.Text)
+            if currentClean ~= "" and string.lower(currentClean) ~= string.lower(targetPlayer.Name) and string.lower(currentClean) ~= string.lower(targetPlayer.DisplayName) then
+                Log("Цель в UI сменилась на '" .. currentClean .. "' — переключаюсь!", "INFO")
+                break
+            end
+        end
+
+        -- 1. Безопасная телепортация прямо к игроку (с отступом 1.2 studs спереди)
+        pcall(function()
+            local targetCF = targetHRP.CFrame * CFrame.new(0, 0, -1.2)
+            myHRP.CFrame = targetCF
+            myHRP.AssemblyLinearVelocity = Vector3.zero
+        end)
+
+        -- 2. Взмах ножом (только чистый нативный Tool:Activate(), БЕЗ крашащих функций)
+        tool = myChar:FindFirstChildOfClass("Tool")
+        if not tool then
+            tool = InspectAndEquipKnife()
+        end
+
+        if tool then
+            pcall(function() tool:Activate() end)
+        end
+
+        task.wait(0.08)
+    end
+end
+
+local function StartKillLoop()
+    if isRunning then
+        StopKillLoop()
+        return
+    end
+
+    isRunning = true
+    BtnKill.Text = "⚡ KILL ALL: СТОП"
+    BtnKill.BackgroundColor3 = Color3.fromRGB(40, 180, 50)
+    UpdateStatus("Kill All запущен", Color3.fromRGB(100, 255, 100))
+    Log("--- СТАРТ ЦИКЛА KILL ALL ---", "KILL")
+
+    task.spawn(function()
+        -- Сразу достаём нож в руку
+        InspectAndEquipKnife()
+
+        local noTargetCounter = 0
+
+        while isRunning and not isTerminated do
+            local myChar = LocalPlayer.Character
+            local myHum = myChar and myChar:FindFirstChildOfClass("Humanoid")
+            if not myChar or not myHum or myHum.Health <= 0 then
+                Log("Персонаж погиб — остановка Kill All", "ERROR")
+                break
+            end
+
+            -- Быстрый поиск цели (без лишнего спама в лог)
+            local label = FindTargetLabel()
+            local targetPlayer: Player? = nil
+
+            if label then
+                local cleanName = CleanNickname(label.Text)
+                if cleanName ~= "" and cleanName ~= "Label" and cleanName ~= "None" then
+                    targetPlayer = FindPlayerByName(cleanName)
+                end
+            end
+
+            if targetPlayer and targetPlayer.Character then
+                local hum = targetPlayer.Character:FindFirstChildOfClass("Humanoid")
+                if hum and hum.Health > 0 then
+                    noTargetCounter = 0
+                    KillTarget(targetPlayer)
+                    task.wait(0.1)
+                else
+                    targetPlayer = nil
+                end
+            end
+
+            if not targetPlayer then
+                noTargetCounter = noTargetCounter + 1
+                UpdateStatus("Ожидание цели (" .. noTargetCounter .. "/10)", Color3.fromRGB(255, 180, 50))
+
+                -- Ждём смены текста в лейбле до 0.5с
+                local textChanged = false
+                local conn: RBXScriptConnection? = nil
+                if label then
+                    conn = label:GetPropertyChangedSignal("Text"):Connect(function()
+                        textChanged = true
+                    end)
+                end
+
+                local waitStart = tick()
+                while tick() - waitStart < 0.5 and not textChanged and isRunning do
+                    task.wait(0.05)
+                end
+
+                if conn then conn:Disconnect() end
+
+                -- Если цели нет более 5 секунд — раунд завершен
+                if noTargetCounter >= 10 then
+                    Log("Таргеты закончились / Раунд завершен", "SUCCESS")
+                    UpdateStatus("Раунд завершен", Color3.fromRGB(100, 255, 100))
+                    break
+                end
+            end
+        end
+
+        StopKillLoop()
+    end)
+end
+
+                -- Если цели нет более 5 секунд — раунд кончился
+                if noTargetCounter >= 10 then
+                    Log("Таргеты не обновляются 5 секунд — раунд завершен!", "SUCCESS")
+                    UpdateStatus("Таргеты кончились / Раунд окончен", Color3.fromRGB(100, 255, 100))
+                    break
+                end
+            end
+        end
+
+        StopKillLoop()
+    end)
+end
+
+-- =====================================================================
+-- NOCLIP ВО ВРЕМЯ РАБОТЫ KILL ALL
+-- =====================================================================
+RegisterConnection(RunService.Stepped:Connect(function()
+    if isTerminated then return end
+    if isRunning and LocalPlayer.Character then
+        for _, part in ipairs(LocalPlayer.Character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = false
+            end
+        end
+    end
+end))
+
+-- =====================================================================
+-- ПРИВЯЗКА КНОПОК
+-- =====================================================================
+local function BindClick(btn, callback)
+    local debounce = false
+    local function fire()
+        if debounce or isTerminated then return end
+        debounce = true
+        task.spawn(callback)
+        task.wait(0.15)
+        debounce = false
+    end
+    btn.Activated:Connect(fire)
+    btn.MouseButton1Click:Connect(fire)
+end
+
+BindClick(BtnScan, RunTargetScan)
+BindClick(BtnEquip, InspectAndEquipKnife)
+BindClick(BtnKill, StartKillLoop)
+BindClick(BtnClear, ClearLogs)
+
+-- Закрытие скрипта
+local function Terminate()
+    if isTerminated then return end
+    isTerminated = true
+    isRunning = false
+
+    for _, conn in ipairs(activeConnections) do
+        if conn and conn.Connected then
+            pcall(function() conn:Disconnect() end)
+        end
+    end
+    table.clear(activeConnections)
+
+    if ScreenGui and ScreenGui.Parent then
+        ScreenGui:Destroy()
+    end
+    print("[MM2 DEBUG] Скрипт диагностики выгружен.")
+end
+
+BindClick(CloseBtn, Terminate)
+
+-- Приветственный лог при запуске
+Log("Диагностический скрипт загружен!", "SUCCESS")
+Log("Нажмите '🔍 СКАН TARGET' для проверки обнаружения цели", "INFO")
+Log("Нажмите '🗡 ВЗЯТЬ НОЖ' для проверки экипировки", "INFO")
+Log("Нажмите '⚡ KILL ALL' для проверки боевого цикла", "INFO")
