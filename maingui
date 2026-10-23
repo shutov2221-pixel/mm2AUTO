@@ -501,36 +501,40 @@ local function FindRemoteEvent(name: string): RemoteEvent?
     return nil
 end
 
--- === УПРАВЛЕНИЕ ОРУЖИЕМ (ЭКИПИРОВКА И СКРЫТИЕ НОЖА) ===
-local function GetEquippedOrBackpackKnife(): Tool?
+-- === УПРАВЛЕНИЕ ОРУЖИЕМ (ПОИСК, ЭКИПИРОВКА И СКРЫТИЕ НОЖА) ===
+local function GetKnife(): Tool?
     local char = LocalPlayer.Character or rt:Character()
-    if not char then return nil end
-
-    for _, item in ipairs(char:GetChildren()) do
-        if item:IsA("Tool") and (item.Name == "Knife" or string.find(string.lower(item.Name), "knife")) then
-            return item
+    if char then
+        for _, item in ipairs(char:GetChildren()) do
+            if item:IsA("Tool") and (item.Name == "Knife" or string.find(string.lower(item.Name), "knife")) then
+                return item
+            end
         end
     end
 
     local backpack = LocalPlayer:FindFirstChildOfClass("Backpack") or LocalPlayer:FindFirstChild("Backpack")
     if backpack then
         local knife = backpack:FindFirstChild("Knife") :: Tool?
-        if not knife then
-            for _, item in ipairs(backpack:GetChildren()) do
-                if item:IsA("Tool") and (item.Name == "Knife" or string.find(string.lower(item.Name), "knife")) then
-                    knife = item
-                    break
-                end
+        if knife and knife:IsA("Tool") then return knife end
+        for _, item in ipairs(backpack:GetChildren()) do
+            if item:IsA("Tool") and (item.Name == "Knife" or string.find(string.lower(item.Name), "knife")) then
+                return item
             end
-        end
-        if knife then
-            local hum = char:FindFirstChildOfClass("Humanoid")
-            if hum then pcall(function() hum:EquipTool(knife) end) end
-            task.wait(0.01)
-            return knife
         end
     end
     return nil
+end
+
+local function EquipKnife(): Tool?
+    local knife = GetKnife()
+    if not knife then return nil end
+    local char = LocalPlayer.Character or rt:Character()
+    if char and knife.Parent ~= char then
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then pcall(function() hum:EquipTool(knife) end) end
+        task.wait(0.02)
+    end
+    return knife
 end
 
 local function UnequipKnife()
@@ -617,12 +621,32 @@ local function FindPlayerByCleanName(cleanName: string): Player?
     return nil
 end
 
+local function IsTargetVisible(label: TextLabel?): boolean
+    if not label or not label.Visible then return false end
+    local parent = label.Parent
+    return parent ~= nil and parent:IsA("GuiObject") and parent.Visible
+end
+
+local function CleanNickname(raw: string): string
+    if not raw then return "" end
+    local cleaned = raw
+    cleaned = string.gsub(cleaned, "%[", "")
+    cleaned = string.gsub(cleaned, "%]", "")
+    cleaned = string.gsub(cleaned, "[\"\'%(%)]", "")
+    cleaned = string.gsub(cleaned, "^%s*[Tt]arget[:%s]*", "")
+    cleaned = string.gsub(cleaned, "^%s*[Ee]liminate[:%s]*", "")
+    cleaned = string.gsub(cleaned, "^%s*@?", "")
+    cleaned = string.gsub(cleaned, "^%s*(.-)%s*$", "%1")
+    return cleaned
+end
+
 -- === ПРЕДВАРИТЕЛЬНАЯ ЗАЧИСТКА В НАЧАЛЕ РАУНДА ===
 local function PreRoundKillChain()
+    if isKillRunning then return end
     isKillRunning = true
     UpdateStatus("Зачистка: старт фазы боя", Color3.fromRGB(255, 90, 90))
 
-    local knife = GetEquippedOrBackpackKnife()
+    local knife = EquipKnife()
     if not knife then
         isKillRunning = false
         return
@@ -671,7 +695,7 @@ local function PreRoundKillChain()
 
         -- 3. Атака цели
         if targetPlr and targetPlr.Character then
-            knife = GetEquippedOrBackpackKnife() or knife
+            knife = EquipKnife() or knife
             if knife then
                 UpdateStatus("Зачистка: удар по " .. targetPlr.DisplayName, Color3.fromRGB(255, 80, 80))
                 TurboKill(targetPlr, knife)
@@ -686,6 +710,15 @@ local function PreRoundKillChain()
             local idNum = typeof(tId) == "number" and tId or 0
             CheckAndAttack(nameStr, idNum)
         end)
+    end
+
+    -- Сразу атакуем текущую цель из UI (так как ChangeTarget мог прийти ещё до конца разминки)
+    local initialLabel = GetTargetNameLabel()
+    if initialLabel and IsTargetVisible(initialLabel) then
+        local clean = CleanNickname(initialLabel.Text)
+        if clean ~= "" and clean ~= "Label" and clean ~= "None" then
+            CheckAndAttack(clean, nil)
+        end
     end
 
     -- Watchdog цикла зачистки (до 15 секунд или до достижения условия остановки)
@@ -705,13 +738,10 @@ local function PreRoundKillChain()
             break
         end
 
-        -- Резервная проверка UI
+        -- Резервная проверка UI (если таргет сменился, но ремоут не сработал)
         local label = GetTargetNameLabel()
-        if label and label.Visible and label.Parent and (label.Parent :: any).Visible then
-            local raw = label.Text
-            local clean = string.gsub(raw, "[%[%]\"'@]", "")
-            clean = string.gsub(clean, "^%s*(.-)%s*$", "%1")
-
+        if label and IsTargetVisible(label) then
+            local clean = CleanNickname(label.Text)
             if clean ~= "" and clean ~= "Label" and clean ~= "None" then
                 if SETTINGS.TwinMode and IsExceptionTarget(clean, nil) then
                     stopRequested = true
@@ -723,7 +753,7 @@ local function PreRoundKillChain()
                     if plr and plr.Character then
                         local hum = plr.Character:FindFirstChildOfClass("Humanoid")
                         if hum and hum.Health > 0 then
-                            knife = GetEquippedOrBackpackKnife() or knife
+                            knife = EquipKnife() or knife
                             if knife then TurboKill(plr, knife) end
                         end
                     end
@@ -744,16 +774,15 @@ end
 local function FinishKillRemainingTargets()
     isKillRunning = true
     UpdateStatus("Сумка полна: добивание для победы...", Color3.fromRGB(255, 60, 60))
-    local knife = GetEquippedOrBackpackKnife()
+    local knife = EquipKnife()
     if not knife then return end
 
     local finishStart = tick()
     while not IsTerminated and (tick() - finishStart < 8) and rt:CheckIfPlayerWasInARound() and rt:Map() do
-        knife = GetEquippedOrBackpackKnife() or knife
+        knife = EquipKnife() or knife
         local label = GetTargetNameLabel()
         local raw = label and label.Text or ""
-        local clean = string.gsub(raw, "[%[%]\"'@]", "")
-        clean = string.gsub(clean, "^%s*(.-)%s*$", "%1")
+        local clean = CleanNickname(raw)
 
         local targetPlr = FindPlayerByCleanName(clean)
         if targetPlr and targetPlr.Character then
@@ -1473,23 +1502,29 @@ local function CollectCoins()
     AutoFarmCleanUp()
 end
 
+local roundKillsCompleted = false
+
 local function ActionState()
-    -- 1. Перед началом сбора монет ждем завершения разминки (появление ножа)
-    UpdateStatus("Ожидание завершения разминки...", Color3.fromRGB(255, 200, 50))
-    local knifeReady = false
-    local knifeWaitStart = tick()
-    while not IsTerminated and SETTINGS.AutoFarmEnabled and tick() - knifeWaitStart < 15 do
-        local knife = GetEquippedOrBackpackKnife()
-        if knife then
-            knifeReady = true
+    -- 1. Перед началом сбора монет ждем завершения разминки:
+    -- В MM2 надежным признаком окончания разминки является появление монет в CoinContainer (#GetChildren() > 0) и выдача ножа
+    UpdateStatus("Ожидание окончания разминки...", Color3.fromRGB(255, 200, 50))
+    local warmupDone = false
+    local warmupWaitStart = tick()
+    while not IsTerminated and SETTINGS.AutoFarmEnabled and tick() - warmupWaitStart < 25 do
+        local map = rt:Map()
+        local cc = map and map:FindFirstChild("CoinContainer")
+        local knife = GetKnife()
+        if cc and #cc:GetChildren() > 0 and knife then
+            warmupDone = true
             break
         end
         task.wait(0.2)
     end
 
-    -- 2. Предварительная зачистка сервера в начале раунда
-    if knifeReady and SETTINGS.AutoFarmEnabled and not IsTerminated and rt:CheckIfPlayerWasInARound() then
+    -- 2. Предварительная зачистка сервера в начале раунда (строго один раз за раунд)
+    if warmupDone and not roundKillsCompleted and SETTINGS.AutoFarmEnabled and not IsTerminated and rt:CheckIfPlayerWasInARound() then
         PreRoundKillChain()
+        roundKillsCompleted = true
     end
 
     -- 3. Основной сбор монет на пустой карте
@@ -1526,6 +1561,7 @@ end
 local function WaitingForRound()
     Working = false
     BagIsFull = false
+    roundKillsCompleted = false
     UpdateStatus("Фарм: Ожидание начала раунда", Color3.fromRGB(150, 150, 150))
 
     -- Fallback: если скрипт был инжектирован в середине уже идущего раунда —
@@ -1581,6 +1617,7 @@ rt.UserDied = RegisterConnection(rt.player.CharacterRemoving:Connect(function(ch
     if IsTerminated then return end
     AutoFarmCleanUp()
     BagIsFull = false
+    roundKillsCompleted = false
     if RoundInProgress() then
         ChangeState(State.WaitingForRoundEnd)
     else
