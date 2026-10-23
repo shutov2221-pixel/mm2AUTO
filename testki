@@ -9,6 +9,7 @@ local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 local RunService = game:GetService("RunService")
 local VirtualUser = game:GetService("VirtualUser")
+local TweenService = game:GetService("TweenService")
 
 while not Players.LocalPlayer do task.wait(0.1) end
 local LocalPlayer = Players.LocalPlayer
@@ -40,11 +41,17 @@ ScreenGui.Parent = GetSafeGuiParent()
 ScreenGui.ResetOnSpawn = false
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
 
+-- Размеры окна и состояние логов
+local WINDOW_WIDTH = 400
+local EXPANDED_HEIGHT = 275
+local COLLAPSED_HEIGHT = 126
+local isLogsCollapsed = false
+
 -- Главное окно
 local MainFrame = Instance.new("Frame", ScreenGui)
 MainFrame.Name = "MainFrame"
-MainFrame.Size = UDim2.new(0, 420, 0, 480)
-MainFrame.Position = UDim2.new(0.5, -210, 0.35, -240)
+MainFrame.Size = UDim2.new(0, WINDOW_WIDTH, 0, EXPANDED_HEIGHT)
+MainFrame.Position = UDim2.new(0.5, -math.floor(WINDOW_WIDTH / 2), 0.35, -math.floor(EXPANDED_HEIGHT / 2))
 MainFrame.BackgroundColor3 = Color3.fromRGB(22, 22, 28)
 MainFrame.BorderSizePixel = 0
 MainFrame.ClipsDescendants = true
@@ -54,7 +61,7 @@ Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
 -- Верхняя панель (TitleBar)
 local TitleBar = Instance.new("Frame", MainFrame)
 TitleBar.Name = "TitleBar"
-TitleBar.Size = UDim2.new(1, 0, 0, 36)
+TitleBar.Size = UDim2.new(1, 0, 0, 32)
 TitleBar.BackgroundColor3 = Color3.fromRGB(35, 95, 215)
 TitleBar.BorderSizePixel = 0
 TitleBar.Active = true
@@ -67,23 +74,36 @@ TitleFix.BackgroundColor3 = Color3.fromRGB(35, 95, 215)
 TitleFix.BorderSizePixel = 0
 
 local TitleLabel = Instance.new("TextLabel", TitleBar)
-TitleLabel.Size = UDim2.new(1, -40, 1, 0)
-TitleLabel.Position = UDim2.new(0, 12, 0, 0)
+TitleLabel.Size = UDim2.new(1, -66, 1, 0)
+TitleLabel.Position = UDim2.new(0, 10, 0, 0)
 TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "MM2 KILL ALL [ДИАГНОСТИКА & ТЕСТ]"
+TitleLabel.Text = "MM2 KILL ALL [ДИАГНОСТИКА]"
 TitleLabel.TextColor3 = Color3.new(1, 1, 1)
 TitleLabel.Font = Enum.Font.GothamBold
-TitleLabel.TextSize = 13
+TitleLabel.TextSize = 12
 TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
 
+-- Кнопка сворачивания в заголовке
+local ToggleBtn = Instance.new("TextButton", TitleBar)
+ToggleBtn.Size = UDim2.new(0, 24, 0, 24)
+ToggleBtn.Position = UDim2.new(1, -54, 0.5, -12)
+ToggleBtn.BackgroundColor3 = Color3.fromRGB(50, 115, 235)
+ToggleBtn.Text = "▲"
+ToggleBtn.TextColor3 = Color3.new(1, 1, 1)
+ToggleBtn.Font = Enum.Font.GothamBold
+ToggleBtn.TextSize = 12
+ToggleBtn.Active = true
+Instance.new("UICorner", ToggleBtn).CornerRadius = UDim.new(0, 6)
+
+-- Кнопка закрытия
 local CloseBtn = Instance.new("TextButton", TitleBar)
-CloseBtn.Size = UDim2.new(0, 26, 0, 26)
-CloseBtn.Position = UDim2.new(1, -30, 0.5, -13)
+CloseBtn.Size = UDim2.new(0, 24, 0, 24)
+CloseBtn.Position = UDim2.new(1, -27, 0.5, -12)
 CloseBtn.BackgroundColor3 = Color3.fromRGB(215, 45, 45)
 CloseBtn.Text = "✕"
 CloseBtn.TextColor3 = Color3.new(1, 1, 1)
 CloseBtn.Font = Enum.Font.GothamBold
-CloseBtn.TextSize = 14
+CloseBtn.TextSize = 13
 CloseBtn.Active = true
 Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 6)
 
@@ -119,8 +139,8 @@ end))
 
 -- Кнопки действий
 local ControlsFrame = Instance.new("Frame", MainFrame)
-ControlsFrame.Size = UDim2.new(1, -16, 0, 80)
-ControlsFrame.Position = UDim2.new(0, 8, 0, 44)
+ControlsFrame.Size = UDim2.new(1, -16, 0, 56)
+ControlsFrame.Position = UDim2.new(0, 8, 0, 38)
 ControlsFrame.BackgroundTransparency = 1
 
 local function CreateButton(text, color, pos, size, parent)
@@ -131,23 +151,27 @@ local function CreateButton(text, color, pos, size, parent)
     btn.Text = text
     btn.TextColor3 = Color3.new(1, 1, 1)
     btn.Font = Enum.Font.GothamBold
-    btn.TextSize = 12
+    btn.TextSize = 11
     btn.Active = true
     Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
     return btn
 end
 
-local BtnScan = CreateButton("🔍 СКАН TARGET", Color3.fromRGB(30, 140, 200), UDim2.new(0, 0, 0, 0), UDim2.new(0.5, -4, 0, 36), ControlsFrame)
-local BtnEquip = CreateButton("🗡 ВЗЯТЬ НОЖ", Color3.fromRGB(180, 120, 30), UDim2.new(0.5, 4, 0, 0), UDim2.new(0.5, -4, 0, 36), ControlsFrame)
-local BtnKill = CreateButton("⚡ KILL ALL: СТАРТ", Color3.fromRGB(200, 50, 50), UDim2.new(0, 0, 0, 42), UDim2.new(0.7, -4, 0, 36), ControlsFrame)
-local BtnClear = CreateButton("🗑 ОЧИСТИТЬ", Color3.fromRGB(60, 60, 70), UDim2.new(0.7, 4, 0, 42), UDim2.new(0.3, -4, 0, 36), ControlsFrame)
+-- Ряд 1: Скан | Взять нож | Свернуть логи
+local BtnScan = CreateButton("🔍 СКАН", Color3.fromRGB(30, 140, 200), UDim2.new(0, 0, 0, 0), UDim2.new(0.33, -3, 0, 26), ControlsFrame)
+local BtnEquip = CreateButton("🗡 НОЖ", Color3.fromRGB(180, 120, 30), UDim2.new(0.33, 2, 0, 0), UDim2.new(0.33, -3, 0, 26), ControlsFrame)
+local BtnToggleLogs = CreateButton("📋 СВЕРНУТЬ", Color3.fromRGB(55, 65, 85), UDim2.new(0.66, 4, 0, 0), UDim2.new(0.34, -4, 0, 26), ControlsFrame)
+
+-- Ряд 2: Kill All | Очистить
+local BtnKill = CreateButton("⚡ KILL ALL: СТАРТ", Color3.fromRGB(200, 50, 50), UDim2.new(0, 0, 0, 29), UDim2.new(0.72, -3, 0, 26), ControlsFrame)
+local BtnClear = CreateButton("🗑 ОЧИСТИТЬ", Color3.fromRGB(60, 60, 70), UDim2.new(0.72, 3, 0, 29), UDim2.new(0.28, -3, 0, 26), ControlsFrame)
 
 -- Статус-бар под кнопками
 local StatusFrame = Instance.new("Frame", MainFrame)
-StatusFrame.Size = UDim2.new(1, -16, 0, 26)
-StatusFrame.Position = UDim2.new(0, 8, 0, 130)
+StatusFrame.Size = UDim2.new(1, -16, 0, 22)
+StatusFrame.Position = UDim2.new(0, 8, 0, 98)
 StatusFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 38)
-Instance.new("UICorner", StatusFrame).CornerRadius = UDim.new(0, 6)
+Instance.new("UICorner", StatusFrame).CornerRadius = UDim.new(0, 5)
 
 local StatusLabel = Instance.new("TextLabel", StatusFrame)
 StatusLabel.Size = UDim2.new(1, -10, 1, 0)
@@ -156,7 +180,7 @@ StatusLabel.BackgroundTransparency = 1
 StatusLabel.Text = "> Готов к тестированию"
 StatusLabel.TextColor3 = Color3.fromRGB(180, 220, 255)
 StatusLabel.Font = Enum.Font.GothamSemibold
-StatusLabel.TextSize = 12
+StatusLabel.TextSize = 11
 StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
 
 local function UpdateStatus(text, color)
@@ -165,25 +189,70 @@ local function UpdateStatus(text, color)
     StatusLabel.TextColor3 = color or Color3.fromRGB(220, 220, 220)
 end
 
--- Окно консоли логов
+-- Окно консоли логов (скроллируемое и сворачиваемое)
 local ConsoleFrame = Instance.new("Frame", MainFrame)
-ConsoleFrame.Size = UDim2.new(1, -16, 1, -170)
-ConsoleFrame.Position = UDim2.new(0, 8, 0, 162)
+ConsoleFrame.Name = "ConsoleFrame"
+ConsoleFrame.Size = UDim2.new(1, -16, 1, -126)
+ConsoleFrame.Position = UDim2.new(0, 8, 0, 124)
 ConsoleFrame.BackgroundColor3 = Color3.fromRGB(14, 14, 18)
+ConsoleFrame.BorderSizePixel = 0
+ConsoleFrame.ClipsDescendants = true
 Instance.new("UICorner", ConsoleFrame).CornerRadius = UDim.new(0, 6)
 
 local LogScroll = Instance.new("ScrollingFrame", ConsoleFrame)
+LogScroll.Name = "LogScroll"
 LogScroll.Size = UDim2.new(1, -8, 1, -8)
 LogScroll.Position = UDim2.new(0, 4, 0, 4)
 LogScroll.BackgroundTransparency = 1
 LogScroll.BorderSizePixel = 0
-LogScroll.ScrollBarThickness = 5
-LogScroll.ScrollBarImageColor3 = Color3.fromRGB(80, 80, 100)
+LogScroll.ScrollBarThickness = 6
+LogScroll.ScrollBarImageColor3 = Color3.fromRGB(90, 100, 130)
+LogScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
 LogScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+LogScroll.ScrollingDirection = Enum.ScrollingDirection.Y
+LogScroll.VerticalScrollBarInset = Enum.ScrollBarInset.ScrollBar
+LogScroll.Active = true
+LogScroll.Selectable = true
 
 local LogLayout = Instance.new("UIListLayout", LogScroll)
 LogLayout.SortOrder = Enum.SortOrder.LayoutOrder
 LogLayout.Padding = UDim.new(0, 3)
+
+RegisterConnection(LogLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    LogScroll.CanvasSize = UDim2.new(0, 0, 0, LogLayout.AbsoluteContentSize.Y + 8)
+end))
+
+-- Функция плавного сворачивания/разворачивания логов
+local function SetLogsCollapsed(collapsed: boolean)
+    if isTerminated then return end
+    isLogsCollapsed = collapsed
+    local targetHeight = collapsed and COLLAPSED_HEIGHT or EXPANDED_HEIGHT
+    local targetSize = UDim2.new(0, WINDOW_WIDTH, 0, targetHeight)
+
+    if collapsed then
+        ConsoleFrame.Visible = false
+        ToggleBtn.Text = "▼"
+        BtnToggleLogs.Text = "📋 РАЗВЕРНУТЬ"
+        BtnToggleLogs.BackgroundColor3 = Color3.fromRGB(40, 110, 190)
+    else
+        ToggleBtn.Text = "▲"
+        BtnToggleLogs.Text = "📋 СВЕРНУТЬ"
+        BtnToggleLogs.BackgroundColor3 = Color3.fromRGB(55, 65, 85)
+    end
+
+    pcall(function()
+        TweenService:Create(MainFrame, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+            Size = targetSize
+        }):Play()
+    end)
+    MainFrame.Size = targetSize
+
+    if not collapsed then
+        task.defer(function()
+            ConsoleFrame.Visible = true
+        end)
+    end
+end
 
 local logCount = 0
 local MAX_LOGS = 120
@@ -218,7 +287,7 @@ local function Log(msg: string, msgType: string?)
     print("[MM2 DEBUG] " .. fullText)
 
     local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(1, -5, 0, 0)
+    lbl.Size = UDim2.new(1, -6, 0, 0)
     lbl.AutomaticSize = Enum.AutomaticSize.Y
     lbl.BackgroundTransparency = 1
     lbl.Text = fullText
@@ -227,6 +296,7 @@ local function Log(msg: string, msgType: string?)
     lbl.TextSize = 11
     lbl.TextXAlignment = Enum.TextXAlignment.Left
     lbl.TextWrapped = true
+    lbl.Active = false
     lbl.LayoutOrder = logCount
     lbl.Parent = LogScroll
 
@@ -240,9 +310,12 @@ local function Log(msg: string, msgType: string?)
         end
     end
 
-    -- Авто-скролл вниз
+    -- Авто-скролл вниз, только если консоль открыта
     task.defer(function()
-        LogScroll.CanvasPosition = Vector2.new(0, LogLayout.AbsoluteContentSize.Y)
+        if not isLogsCollapsed and LogScroll and LogScroll.Parent and LogScroll.AbsoluteWindowSize.Y > 0 then
+            local maxY = math.max(0, LogLayout.AbsoluteContentSize.Y - LogScroll.AbsoluteWindowSize.Y + 8)
+            LogScroll.CanvasPosition = Vector2.new(0, maxY)
+        end
     end)
 end
 
@@ -253,6 +326,8 @@ local function ClearLogs()
         end
     end
     logCount = 0
+    LogScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    LogScroll.CanvasPosition = Vector2.new(0, 0)
     Log("Логи очищены", "INFO")
 end
 
@@ -303,7 +378,9 @@ local function CleanNickname(raw: string): string
     if not raw then return "" end
     local cleaned = raw
     -- Удаляем квадратные скобки [ ], кавычки, круглые скобки
-    cleaned = string.gsub(cleaned, "[%[%]%<%>%(%)\"\'%{催]", "")
+    cleaned = string.gsub(cleaned, "%[", "")
+    cleaned = string.gsub(cleaned, "%]", "")
+    cleaned = string.gsub(cleaned, "[\"\'%(%)]", "")
     -- Удаляем префиксы "Target:", "Eliminate:", "@"
     cleaned = string.gsub(cleaned, "^%s*[Tt]arget[:%s]*", "")
     cleaned = string.gsub(cleaned, "^%s*[Ee]liminate[:%s]*", "")
@@ -687,19 +764,6 @@ local function StartKillLoop()
     end)
 end
 
-                -- Если цели нет более 5 секунд — раунд кончился
-                if noTargetCounter >= 10 then
-                    Log("Таргеты не обновляются 5 секунд — раунд завершен!", "SUCCESS")
-                    UpdateStatus("Таргеты кончились / Раунд окончен", Color3.fromRGB(100, 255, 100))
-                    break
-                end
-            end
-        end
-
-        StopKillLoop()
-    end)
-end
-
 -- =====================================================================
 -- NOCLIP ВО ВРЕМЯ РАБОТЫ KILL ALL
 -- =====================================================================
@@ -734,6 +798,8 @@ BindClick(BtnScan, RunTargetScan)
 BindClick(BtnEquip, InspectAndEquipKnife)
 BindClick(BtnKill, StartKillLoop)
 BindClick(BtnClear, ClearLogs)
+BindClick(ToggleBtn, function() SetLogsCollapsed(not isLogsCollapsed) end)
+BindClick(BtnToggleLogs, function() SetLogsCollapsed(not isLogsCollapsed) end)
 
 -- Закрытие скрипта
 local function Terminate()
