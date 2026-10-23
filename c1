@@ -1,0 +1,80 @@
+-- =====================================================================
+-- MM2 ASSASSIN ENGINE REVERSE-ENGINEERING SPY
+-- =====================================================================
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local LocalPlayer = Players.LocalPlayer
+
+print("--- [SPY] СТАРТ ИССЛЕДОВАНИЯ МЕХАНИКИ ASSASSIN ---")
+
+-- 1. СКАНИРОВАНИЕ REPLICATEDSTORAGE НА ДАННЫЕ РАУНДА
+print("\n[1] Поиск скрытых таблиц/объектов Assassin в ReplicatedStorage:")
+for _, item in ipairs(ReplicatedStorage:GetDescendants()) do
+    local lowerName = string.lower(item.Name)
+    if string.find(lowerName, "target") or string.find(lowerName, "assassin") or string.find(lowerName, "round") then
+        local valInfo = ""
+        if item:IsA("ValueBase") then
+            valInfo = " [Значение: " .. tostring((item :: any).Value) .. "]"
+        end
+        print(string.format("  -> %s (%s)%s", item:GetFullName(), item.ClassName, valInfo))
+    end
+end
+
+-- 2. СНИФФЕР REMOTES (Слушаем все входящие вызовы от сервера)
+print("\n[2] Установка ловушек на RemoteEvents:")
+local remotesFound = 0
+for _, obj in ipairs(ReplicatedStorage:GetDescendants()) do
+    if obj:IsA("RemoteEvent") then
+        local rName = string.lower(obj.Name)
+        if string.find(rName, "game") or string.find(rName, "round") or string.find(rName, "target") or string.find(rName, "role") then
+            remotesFound = remotesFound + 1
+            obj.OnClientEvent:Connect(function(...)
+                local args = {...}
+                print(string.format("⚡ ПАКЕТ ОТ СЕРВЕРА [%s]:", obj.Name))
+                for i, arg in ipairs(args) do
+                    if type(arg) == "table" then
+                        print(string.format("   Arg %d (TABLE):", i))
+                        for k, v in pairs(arg) do
+                            print(string.format("      [%s] = %s", tostring(k), tostring(v)))
+                        end
+                    else
+                        print(string.format("   Arg %d (%s) = %s", i, type(arg), tostring(arg)))
+                    end
+                end
+            end)
+            print("  [+] Ловушка установлена на: " .. obj.Name)
+        end
+    end
+end
+
+-- 3. ИНСПЕКЦИЯ СКРИПТА, ИЗМЕНЯЮЩЕГО ТАРГЕТ (Upvalues & Script Environment)
+task.spawn(function()
+    local pGui = LocalPlayer:WaitForChild("PlayerGui", 5)
+    local targetLabel = pGui and pGui:FindFirstChild("TargetName", true)
+    if targetLabel then
+        print("\n[3] Анализ соединений TargetName:")
+        local conns = getconnections and getconnections(targetLabel:GetPropertyChangedSignal("Text"))
+        if conns and #conns > 0 then
+            for idx, conn in ipairs(conns) do
+                local func = conn.Function
+                print(string.format("  Соединение #%d, функция: %s", idx, tostring(func)))
+                if getupvalues and func then
+                    local ups = getupvalues(func)
+                    print("  Внутренние переменные функции (Upvalues):")
+                    for uName, uVal in pairs(ups) do
+                        print(string.format("    - %s: %s (%s)", tostring(uName), tostring(uVal), type(uVal)))
+                        if type(uVal) == "table" then
+                            for k, v in pairs(uVal) do
+                                print(string.format("        [%s] = %s", tostring(k), tostring(v)))
+                            end
+                        end
+                    end
+                end
+            end
+        else
+            print("  (getconnections не поддерживается вашим инжектором или скрипт пишет напрямую в цикле)")
+        end
+    end
+end)
+
+print("--- [SPY] Ожидание начала раунда и смены таргетов в консоли (F9)... ---")
