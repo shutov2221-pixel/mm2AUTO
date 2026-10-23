@@ -117,7 +117,14 @@ function rt:Map()
 end
 
 function rt:CheckIfGameInProgress() return rt:Map() ~= nil end
-function rt:CheckIfPlayerWasInARound() return self.player:GetAttribute("Alive") == true end
+function rt:CheckIfPlayerWasInARound()
+    local char = self.player.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum and hum.Health > 0 then
+        return self.player:GetAttribute("Alive") ~= false
+    end
+    return false
+end
 function rt:IsElite() return self.player:GetAttribute("Elite") == true end
 
 local function RoundInProgress() return rt:CheckIfGameInProgress() end
@@ -576,12 +583,10 @@ end
 local function CountAliveRoundPlayers(): number
     local count = 0
     for _, plr in ipairs(Players:GetPlayers()) do
-        if plr:GetAttribute("Alive") == true then
-            local char = plr.Character
-            local hum = char and char:FindFirstChildOfClass("Humanoid")
-            if hum and hum.Health > 0 then
-                count = count + 1
-            elseif not hum and char then
+        local char = plr.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if hum and hum.Health > 0 and char.PrimaryPart then
+            if plr:GetAttribute("Alive") ~= false then
                 count = count + 1
             end
         end
@@ -836,7 +841,7 @@ local TitleLabel = Instance.new("TextLabel", TitleBar)
 TitleLabel.Size = UDim2.new(1, -40, 1, 0)
 TitleLabel.Position = UDim2.new(0, 12, 0, 0)
 TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "MM2 AIO SCRIPT1"
+TitleLabel.Text = "MM2 AIO SCRIPT"
 TitleLabel.TextColor3 = Color3.new(1, 1, 1)
 TitleLabel.Font = Enum.Font.GothamBold
 TitleLabel.TextSize = 14
@@ -1505,29 +1510,14 @@ end
 local roundKillsCompleted = false
 
 local function ActionState()
-    -- 1. Перед началом сбора монет ждем завершения разминки:
-    -- В MM2 надежным признаком окончания разминки является появление монет в CoinContainer (#GetChildren() > 0) и выдача ножа
-    UpdateStatus("Ожидание окончания разминки...", Color3.fromRGB(255, 200, 50))
-    local warmupDone = false
-    local warmupWaitStart = tick()
-    while not IsTerminated and SETTINGS.AutoFarmEnabled and tick() - warmupWaitStart < 25 do
-        local map = rt:Map()
-        local cc = map and map:FindFirstChild("CoinContainer")
-        local knife = GetKnife()
-        if cc and #cc:GetChildren() > 0 and knife then
-            warmupDone = true
-            break
-        end
-        task.wait(0.2)
-    end
-
-    -- 2. Предварительная зачистка сервера в начале раунда (строго один раз за раунд)
-    if warmupDone and not roundKillsCompleted and SETTINGS.AutoFarmEnabled and not IsTerminated and rt:CheckIfPlayerWasInARound() then
+    -- Раунд активен, разминка окончена, нож и монеты готовы!
+    -- 1. Предварительная зачистка сервера в начале раунда (строго один раз за раунд)
+    if not roundKillsCompleted and SETTINGS.AutoFarmEnabled and not IsTerminated and rt:CheckIfPlayerWasInARound() then
         PreRoundKillChain()
         roundKillsCompleted = true
     end
 
-    -- 3. Основной сбор монет на пустой карте
+    -- 2. Основной сбор монет на пустой карте
     CollectCoins()
 
     if not SETTINGS.AutoFarmEnabled or IsTerminated then return end
@@ -1562,41 +1552,27 @@ local function WaitingForRound()
     Working = false
     BagIsFull = false
     roundKillsCompleted = false
-    UpdateStatus("Фарм: Ожидание начала раунда", Color3.fromRGB(150, 150, 150))
+    UpdateStatus("Фарм: Ожидание начала раунда...", Color3.fromRGB(150, 150, 150))
 
-    -- Fallback: если скрипт был инжектирован в середине уже идущего раунда —
-    -- карта уже в Workspace и ChildAdded никогда не сработает. Проверяем сразу.
-    if RoundInProgress() and rt:CheckIfPlayerWasInARound() then
-        ChangeState(State.Action)
-        return
-    end
-
-    -- Event-driven ожидание: подписываемся на появление новой карты в Workspace.
-    -- Карта клонируется как прямой потомок Workspace, поэтому ChildAdded достаточно.
-    local roundReady = false
-    local mapConn
-    mapConn = Workspace.ChildAdded:Connect(function(child)
-        if not SETTINGS.AutoFarmEnabled or IsTerminated then return end
-        -- Карта появилась — проверяем наличие CoinContainer
-        -- (небольшая пауза: дерево объектов может реплицироваться не мгновенно)
-        task.delay(0.1, function()
-            if child:FindFirstChild("CoinContainer") and rt:CheckIfPlayerWasInARound() then
-                roundReady = true
-            end
-        end)
-    end)
-
-    -- Опрос атрибута Alive остаётся: он устанавливается сервером чуть позже
-    -- появления карты, поэтому без него возможен ложный старт в зрителях.
+    -- 1. Ждем появления карты в Workspace и нашего участия в раунде
     repeat
         task.wait(0.3)
-        -- Дополнительная проверка через rt:Map() на случай пропуска ChildAdded
-        if RoundInProgress() and rt:CheckIfPlayerWasInARound() then
-            roundReady = true
-        end
-    until roundReady or not SETTINGS.AutoFarmEnabled or IsTerminated
+    until (rt:Map() ~= nil and rt:CheckIfPlayerWasInARound()) or not SETTINGS.AutoFarmEnabled or IsTerminated
 
-    mapConn:Disconnect()
+    if not SETTINGS.AutoFarmEnabled or IsTerminated then return end
+
+    -- 2. Карта загрузилась: теперь ждем окончания таймера разминки (появление монет в CoinContainer и ножа в инвентаре)
+    UpdateStatus("Разминка: ожидание спавна монет и ножа...", Color3.fromRGB(255, 200, 50))
+    local warmupStart = tick()
+    while not IsTerminated and SETTINGS.AutoFarmEnabled and (tick() - warmupStart < 25) do
+        local map = rt:Map()
+        local cc = map and map:FindFirstChild("CoinContainer")
+        local knife = GetKnife()
+        if cc and #cc:GetChildren() > 0 and knife then
+            break
+        end
+        task.wait(0.2)
+    end
 
     if not SETTINGS.AutoFarmEnabled or IsTerminated then return end
     ChangeState(State.Action)
