@@ -1,11 +1,11 @@
 --!strict
 -- =====================================================================
--- MM2 ASSASSIN KILLER [STABLE TURBO v5.1 - SAFE EXECUTOR ENGINE]
--- 1. Полностью исключены любые манипуляции со сменой knife.Parent
---    (которые приводили к моментальному крашу/фризу физического движка).
--- 2. Взвешенный, безопасный удар: нож экипируется один раз при старте.
--- 3. Все действия кнопок запускаются в изолированных корутинах (task.spawn).
--- 4. Авто-добивание цели до смены ника в TargetName без зависаний.
+-- MM2 ASSASSIN KILLER [STEALTH ENGINE v5.2 - NO-EQUIP EXPERIMENT]
+-- Сравнение двух скрытных методов убийства без доставания ножа в руку:
+-- 1. СПОСОБ 1: Прямой урон из Backpack (нож всегда лежит в рюкзаке, руки пусты)
+-- 2. СПОСОБ 2: Ghost Equip (безопасный EquipTool без анимации, возврат в рюкзак)
+-- 3. Резерв: Обычный экип (если сервер MM2 блокирует оба скрытных способа)
+-- Точное логирование сработавшего способа в консоль!
 -- =====================================================================
 
 local Players = game:GetService("Players")
@@ -71,7 +71,7 @@ local TitleLabel = Instance.new("TextLabel")
 TitleLabel.Size = UDim2.new(1, -70, 1, 0)
 TitleLabel.Position = UDim2.new(0, 10, 0, 0)
 TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "⚡ MM2 ASSASSIN TURBO v5.1"
+TitleLabel.Text = "👻 MM2 STEALTH TURBO v5.2"
 TitleLabel.TextColor3 = Color3.fromRGB(255, 215, 80)
 TitleLabel.Font = Enum.Font.GothamBold
 TitleLabel.TextSize = 12
@@ -141,9 +141,9 @@ local function CreateButton(text: string, color: Color3, pos: UDim2, size: UDim2
     return btn
 end
 
--- Ряд 1: Скан | Взять нож | Сниффер | Очистить
+-- Ряд 1: Скан | Найти нож в инвентаре | Сниффер | Очистить
 local BtnScan = CreateButton("🔍 СКАН", Color3.fromRGB(35, 120, 185), UDim2.new(0, 0, 0, 0), UDim2.new(0.32, -2, 0, 26))
-local BtnEquip = CreateButton("🗡 НОЖ", Color3.fromRGB(180, 110, 30), UDim2.new(0.32, 2, 0, 0), UDim2.new(0.28, -2, 0, 26))
+local BtnFindKnife = CreateButton("🎒 НОЖ", Color3.fromRGB(160, 95, 30), UDim2.new(0.32, 2, 0, 0), UDim2.new(0.28, -2, 0, 26))
 local BtnInspect = CreateButton("🕵️ СНИФФЕР", Color3.fromRGB(110, 60, 160), UDim2.new(0.60, 2, 0, 0), UDim2.new(0.22, -2, 0, 26))
 local BtnClear = CreateButton("🗑", Color3.fromRGB(60, 60, 70), UDim2.new(0.82, 2, 0, 0), UDim2.new(0.18, -2, 0, 26))
 
@@ -162,7 +162,7 @@ local StatusLabel = Instance.new("TextLabel")
 StatusLabel.Size = UDim2.new(1, -10, 1, 0)
 StatusLabel.Position = UDim2.new(0, 6, 0, 0)
 StatusLabel.BackgroundTransparency = 1
-StatusLabel.Text = "> Стабильный турбо-режим v5.1 готов"
+StatusLabel.Text = "> Стелс-режим v5.2 готов (тестирование методов без ножа)"
 StatusLabel.TextColor3 = Color3.fromRGB(180, 220, 255)
 StatusLabel.Font = Enum.Font.GothamSemibold
 StatusLabel.TextSize = 10
@@ -362,66 +362,70 @@ local function RunTargetScan(): Player?
 end
 
 -- =====================================================================
--- ПОИСК И ЭКИПИРОВКА НОЖА (СТАБИЛЬНЫЙ МЕТОД БЕЗ КРАША ДВИЖКА)
+-- ПОИСК НОЖА (В РЮКЗАКЕ ИЛИ ПЕРСОНАЖЕ)
 -- =====================================================================
-local function GetOrEquipKnife(): Tool?
-    local char = LocalPlayer.Character
-    if not char then return nil end
-
-    -- 1. Если уже в персонаже
-    for _, item in ipairs(char:GetChildren()) do
-        if item:IsA("Tool") and (item.Name == "Knife" or string.find(string.lower(item.Name), "knife")) then
-            return item
-        end
-    end
-
-    -- 2. Если в рюкзаке — экипируем через официальный API движка
+local function FindKnifeTool(): Tool?
+    -- 1. Сначала ищем в рюкзаке (Backpack)
     local backpack = LocalPlayer:FindFirstChildOfClass("Backpack") or LocalPlayer:FindFirstChild("Backpack")
-    if not backpack then return nil end
+    if backpack then
+        local knife = backpack:FindFirstChild("Knife") :: Tool?
+        if knife and knife:IsA("Tool") then return knife end
 
-    local knife: Tool? = nil
-    for _, item in ipairs(backpack:GetChildren()) do
-        if item:IsA("Tool") and (item.Name == "Knife" or string.find(string.lower(item.Name), "knife")) then
-            knife = item
-            break
+        for _, item in ipairs(backpack:GetChildren()) do
+            if item:IsA("Tool") and string.find(string.lower(item.Name), "knife") then
+                return item
+            end
         end
+        local anyTool = backpack:FindFirstChildOfClass("Tool")
+        if anyTool then return anyTool end
     end
-    if not knife then knife = backpack:FindFirstChildOfClass("Tool") end
-    if not knife then return nil end
 
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    if hum then
-        pcall(function() hum:EquipTool(knife) end)
+    -- 2. Если уже в персонаже
+    local char = LocalPlayer.Character
+    if char then
+        local knife = char:FindFirstChild("Knife") :: Tool?
+        if knife and knife:IsA("Tool") then return knife end
+
+        for _, item in ipairs(char:GetChildren()) do
+            if item:IsA("Tool") and string.find(string.lower(item.Name), "knife") then
+                return item
+            end
+        end
+        local anyTool = char:FindFirstChildOfClass("Tool")
+        if anyTool then return anyTool end
     end
-    task.wait(0.02)
 
-    return knife
+    return nil
 end
 
 -- =====================================================================
--- СТАБИЛЬНЫЙ ТУРБО-УДАР (0% ФРИЗОВ, 100% УРОНА)
+-- СТЕЛС-УДАР: ПОСЛЕДОВАТЕЛЬНОЕ ТЕСТИРОВАНИЕ МЕТОДОВ С ЛОГИРОВАНИЕМ
 -- =====================================================================
-local function ExecuteTurboHit(targetPlayer: Player, knife: Tool): boolean
+local function ExecuteStealthKill(targetPlayer: Player, knife: Tool): (boolean, string)
     local targetChar = targetPlayer.Character
-    if not targetChar then return false end
+    if not targetChar then return false, "NoTargetChar" end
 
     local targetHRP = targetChar:FindFirstChild("HumanoidRootPart") or targetChar:FindFirstChild("Torso") :: BasePart?
     local targetHum = targetChar:FindFirstChildOfClass("Humanoid")
     local handle = knife:FindFirstChild("Handle") :: BasePart?
 
     if not targetHRP or not targetHum or targetHum.Health <= 0 or not handle then
-        return false
+        return false, "InvalidParts"
     end
 
     if not firetouchinterest then
-        Log("ОШИБКА: firetouchinterest недоступен в экзекуторе!", "ERROR")
-        return false
+        return false, "NoFireTouch"
     end
 
-    -- Активация ножа
-    pcall(function() knife:Activate() end)
+    local char = LocalPlayer.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local backpack = LocalPlayer:FindFirstChildOfClass("Backpack") or LocalPlayer:FindFirstChild("Backpack")
 
-    -- Посылаем двойной импульс касания
+    -- -----------------------------------------------------------------
+    -- ЭТАП 1: СПОСОБ 1 — УДАР ПРЯМО ИЗ BACKPACK (РУКИ ПОЛНОСТЬЮ ПУСТЫЕ)
+    -- -----------------------------------------------------------------
+    -- Нож вообще не трогается, лежит в рюкзаке
+    pcall(function() knife:Activate() end)
     pcall(function()
         firetouchinterest(targetHRP, handle, 0)
         firetouchinterest(targetHRP, handle, 1)
@@ -429,15 +433,59 @@ local function ExecuteTurboHit(targetPlayer: Player, knife: Tool): boolean
         firetouchinterest(targetHRP, handle, 1)
     end)
 
-    return true
+    task.wait(0.02)
+    if not targetHum or targetHum.Health <= 0 then
+        return true, "СПОСОБ 1 (Прямой урон из Backpack)"
+    end
+
+    -- -----------------------------------------------------------------
+    -- ЭТАП 2: СПОСОБ 2 — GHOST EQUIP (БЕЗОПАСНЫЙ СВОП НА 1 КАДР)
+    -- -----------------------------------------------------------------
+    -- Используем нативный hum:EquipTool (чтобы движок не зависал!), бьем и тут же убираем
+    if hum and knife.Parent ~= char then
+        pcall(function() hum:EquipTool(knife) end)
+    end
+
+    pcall(function() knife:Activate() end)
+    pcall(function()
+        firetouchinterest(targetHRP, handle, 0)
+        firetouchinterest(targetHRP, handle, 1)
+        firetouchinterest(targetHRP, handle, 0)
+        firetouchinterest(targetHRP, handle, 1)
+    end)
+
+    -- Мгновенно прячем обратно в рюкзак через официальный API движка
+    if hum then
+        pcall(function() hum:UnequipTools() end)
+    end
+
+    task.wait(0.02)
+    if not targetHum or targetHum.Health <= 0 then
+        return true, "СПОСОБ 2 (Ghost Equip на 1 кадр)"
+    end
+
+    -- -----------------------------------------------------------------
+    -- ЭТАП 3: РЕЗЕРВ — КЛАССИЧЕСКИЙ ЭКИП (ЕСЛИ СЕРВЕР ТРЕБУЕТ НОЖ В РУКАХ)
+    -- -----------------------------------------------------------------
+    if hum and knife.Parent ~= char then
+        pcall(function() hum:EquipTool(knife) end)
+    end
+
+    pcall(function() knife:Activate() end)
+    pcall(function()
+        firetouchinterest(targetHRP, handle, 0)
+        firetouchinterest(targetHRP, handle, 1)
+    end)
+
+    return true, "РЕЗЕРВ (С ножом в руке)"
 end
 
 -- Одиночный удар
 local function RunSingleTargetKill()
     task.spawn(function()
-        local knife = GetOrEquipKnife()
+        local knife = FindKnifeTool()
         if not knife then
-            Log("Нож не найден в инвентаре!", "ERROR")
+            Log("Нож не найден в инвентаре/рюкзаке!", "ERROR")
             return
         end
 
@@ -448,17 +496,17 @@ local function RunSingleTargetKill()
         end
 
         local startTime = tick()
-        local ok = ExecuteTurboHit(target, knife)
+        local ok, method = ExecuteStealthKill(target, knife)
         if ok then
             local ms = math.floor((tick() - startTime) * 1000)
-            Log(string.format("🎯 1-Shot нанесён по %s за %d мс!", target.DisplayName, ms), "SUCCESS")
-            UpdateStatus("Удар по: " .. target.DisplayName, Color3.fromRGB(100, 255, 120))
+            Log(string.format("🎯 [%d мс] %s ликвидирован! -> %s", ms, target.DisplayName, method), "SUCCESS")
+            UpdateStatus(target.DisplayName .. " -> " .. method, Color3.fromRGB(100, 255, 120))
         end
     end)
 end
 
 -- =====================================================================
--- ТУРБО-ЦЕПОЧКА С АВТО-ДОБИВАНИЕМ И БЕЗОПАСНЫМИ ПОТОКАМИ
+-- ТУРБО-ЦЕПОЧКА С АВТО-ДОБИВАНИЕМ И ЛОГИРОВАНИЕМ МЕТОДА
 -- =====================================================================
 local chainConnection: RBXScriptConnection? = nil
 local activeTargetName = ""
@@ -470,6 +518,11 @@ local function StopKillLoop()
         chainConnection:Disconnect()
         chainConnection = nil
     end
+
+    -- Убираем нож в рюкзак при остановке
+    local char = LocalPlayer.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum then pcall(function() hum:UnequipTools() end) end
 
     BtnKill.Text = "⚡ ТУРБО-ЦЕПОЧКА"
     BtnKill.BackgroundColor3 = Color3.fromRGB(200, 45, 45)
@@ -494,14 +547,14 @@ local function AttackTargetFromLabel(label: TextLabel, knife: Tool)
     if hum and hum.Health > 0 then
         killAttemptsForTarget = killAttemptsForTarget + 1
         local tStart = tick()
-        ExecuteTurboHit(targetPlayer, knife)
+        local ok, method = ExecuteStealthKill(targetPlayer, knife)
         local ms = math.floor((tick() - tStart) * 1000)
 
         if killAttemptsForTarget == 1 then
-            Log(string.format("⚡ [%d мс] Ликвидирован: %s", ms, targetPlayer.DisplayName), "KILL")
-            UpdateStatus("Атакован: " .. targetPlayer.DisplayName, Color3.fromRGB(255, 80, 80))
+            Log(string.format("⚡ [%d мс] %s -> %s", ms, targetPlayer.DisplayName, method), "KILL")
+            UpdateStatus(targetPlayer.DisplayName .. " -> " .. method, Color3.fromRGB(255, 80, 80))
         elseif killAttemptsForTarget % 3 == 0 then
-            Log(string.format("🔄 Добивание: %s (Попытка %d)", targetPlayer.DisplayName, killAttemptsForTarget), "WARN")
+            Log(string.format("🔄 Добивание: %s (Попытка %d) [%s]", targetPlayer.DisplayName, killAttemptsForTarget, method), "WARN")
         end
     end
 end
@@ -516,12 +569,12 @@ local function StartKillLoop()
     BtnKill.Text = "⚡ СТОП ТУРБО"
     BtnKill.BackgroundColor3 = Color3.fromRGB(40, 180, 50)
     UpdateStatus("Турбо-цепочка АКТИВНА", Color3.fromRGB(100, 255, 100))
-    Log("--- СТАРТ ТУРБО-ЦЕПОЧКИ v5.1 ---", "KILL")
+    Log("--- СТАРТ СТЕЛС ТУРБО-ЦЕПОЧКИ v5.2 ---", "KILL")
 
     task.spawn(function()
-        local knife = GetOrEquipKnife()
+        local knife = FindKnifeTool()
         if not knife then
-            Log("Ошибка: Нож не найден в инвентаре!", "ERROR")
+            Log("Ошибка: Нож не найден в инвентаре/Backpack!", "ERROR")
             StopKillLoop()
             return
         end
@@ -546,7 +599,7 @@ local function StartKillLoop()
             AttackTargetFromLabel(label, knife)
         end)
 
-        -- 3. Watchdog-цикл добивания с защитой от фризов
+        -- 3. Watchdog-цикл добивания (0.06с)
         local emptyCounter = 0
         while isRunning and not isTerminated do
             task.wait(0.06)
@@ -558,9 +611,9 @@ local function StartKillLoop()
                 break
             end
 
-            -- Поддерживаем нож готовым
-            if not knife or not knife.Parent or knife.Parent ~= myChar then
-                knife = GetOrEquipKnife() or knife
+            -- Обновляем ссылку на нож
+            if not knife or not knife.Parent then
+                knife = FindKnifeTool() or knife
             end
 
             local currentLabel = FindTargetLabel()
@@ -616,12 +669,16 @@ end
 
 -- Привязка кнопок (всегда в изолированных потоках)
 BtnScan.MouseButton1Click:Connect(function() task.spawn(RunTargetScan) end)
-BtnEquip.MouseButton1Click:Connect(function()
+BtnFindKnife.MouseButton1Click:Connect(function()
     task.spawn(function()
-        local knife = GetOrEquipKnife()
+        local knife = FindKnifeTool()
         if knife then
-            Log("Нож взят: " .. knife.Name, "SUCCESS")
-            UpdateStatus("Нож в руке: " .. knife.Name, Color3.fromRGB(100, 255, 100))
+            local loc = knife.Parent and knife.Parent.Name or "Unknown"
+            Log(string.format("Нож найден: '%s' (Местоположение: %s)", knife.Name, loc), "SUCCESS")
+            UpdateStatus("Нож в: " .. loc, Color3.fromRGB(100, 255, 100))
+        else
+            Log("Нож не найден в инвентаре/рюкзаке!", "WARN")
+            UpdateStatus("Нож не найден", Color3.fromRGB(255, 160, 50))
         end
     end)
 end)
@@ -642,12 +699,17 @@ local function Terminate()
     end
     table.clear(activeConnections)
 
+    -- Убираем нож в рюкзак
+    local char = LocalPlayer.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum then pcall(function() hum:UnequipTools() end) end
+
     if ScreenGui and ScreenGui.Parent then ScreenGui:Destroy() end
     print("[MM2 ASSASSIN] Скрипт закрыт.")
 end
 
 CloseBtn.MouseButton1Click:Connect(Terminate)
 
-Log("MM2 Assassin Turbo v5.1 готов!", "SUCCESS")
-Log("Фриз устранен (убраны конфликты Parent в физике инжектора).", "INFO")
-Log("• Нажмите '⚡ ТУРБО-ЦЕПОЧКА' для старта скоростной зачистки.", "KILL")
+Log("MM2 Stealth Turbo v5.2 готов!", "SUCCESS")
+Log("Авто-тест способов без ножа в руках с выводом метода в лог.", "INFO")
+Log("• Нажмите '🎯 1-SHOT' или '⚡ ТУРБО-ЦЕПОЧКА' для проверки!", "KILL")
