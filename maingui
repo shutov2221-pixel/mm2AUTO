@@ -629,7 +629,10 @@ end
 local function IsTargetVisible(label: TextLabel?): boolean
     if not label or not label.Visible then return false end
     local parent = label.Parent
-    return parent ~= nil and parent:IsA("GuiObject") and parent.Visible
+    if parent and parent:IsA("GuiObject") then
+        return parent.Visible
+    end
+    return true
 end
 
 local function CleanNickname(raw: string): string
@@ -1552,27 +1555,33 @@ local function WaitingForRound()
     Working = false
     BagIsFull = false
     roundKillsCompleted = false
-    UpdateStatus("Фарм: Ожидание начала раунда...", Color3.fromRGB(150, 150, 150))
+    UpdateStatus("Фарм: Ожидание начала раунда", Color3.fromRGB(150, 150, 150))
 
-    -- 1. Ждем появления карты в Workspace и нашего участия в раунде
+    -- Fallback: если скрипт инжектирован в уже идущем раунде
+    if RoundInProgress() and rt:CheckIfPlayerWasInARound() then
+        ChangeState(State.Action)
+        return
+    end
+
+    local roundReady = false
+    local mapConn
+    mapConn = Workspace.ChildAdded:Connect(function(child)
+        if not SETTINGS.AutoFarmEnabled or IsTerminated then return end
+        task.delay(0.1, function()
+            if child:FindFirstChild("CoinContainer") and rt:CheckIfPlayerWasInARound() then
+                roundReady = true
+            end
+        end)
+    end)
+
     repeat
         task.wait(0.3)
-    until (rt:Map() ~= nil and rt:CheckIfPlayerWasInARound()) or not SETTINGS.AutoFarmEnabled or IsTerminated
-
-    if not SETTINGS.AutoFarmEnabled or IsTerminated then return end
-
-    -- 2. Карта загрузилась: теперь ждем окончания таймера разминки (появление монет в CoinContainer и ножа в инвентаре)
-    UpdateStatus("Разминка: ожидание спавна монет и ножа...", Color3.fromRGB(255, 200, 50))
-    local warmupStart = tick()
-    while not IsTerminated and SETTINGS.AutoFarmEnabled and (tick() - warmupStart < 25) do
-        local map = rt:Map()
-        local cc = map and map:FindFirstChild("CoinContainer")
-        local knife = GetKnife()
-        if cc and #cc:GetChildren() > 0 and knife then
-            break
+        if RoundInProgress() and rt:CheckIfPlayerWasInARound() then
+            roundReady = true
         end
-        task.wait(0.2)
-    end
+    until roundReady or not SETTINGS.AutoFarmEnabled or IsTerminated
+
+    if mapConn then mapConn:Disconnect() end
 
     if not SETTINGS.AutoFarmEnabled or IsTerminated then return end
     ChangeState(State.Action)
