@@ -1440,82 +1440,70 @@ local function isCoinCollectedByServer(coin)
     return false
 end
 
--- === ПЕРЕДВИЖЕНИЕ ДЛЯ СБОРА МОНЕТ (ПОД КАРТОЙ) ===
-local function moveToPositionPhysically(targetPosition, targetCoin, bv, bg)
+-- === ТЕЛЕПОРТАЦИЯ ДЛЯ СБОРА МОНЕТ (ПОД КАРТОЙ С АДАПТИВНОЙ ЗАДЕРЖКОЙ) ===
+local function TeleportCollectCoin(targetPosition: Vector3, targetCoin: Instance, bv: BodyVelocity, bg: BodyGyro): boolean
     local char = rt:Character()
     if not char or not char.PrimaryPart then return false end
 
     local hrp = char.PrimaryPart
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum and hum.Health <= 0 then return false end
+
     local underfloorOffset = SETTINGS.UnderfloorOffset or 3.8
     local finalPosition = targetPosition - Vector3.new(0, underfloorOffset, 0)
+    local distance = (hrp.Position - finalPosition).Magnitude
 
-    local startPos = hrp.Position
-    local lookAtPos = Vector3.new(finalPosition.X, startPos.Y, finalPosition.Z)
-    if (lookAtPos - startPos).Magnitude > 0.1 then
-        bg.CFrame = CFrame.new(startPos, lookAtPos) * CFrame.Angles(math.rad(-90), 0, 0)
-    end
+    -- 1. Мгновенный CFrame-телепорт под монету с горизонтальной ориентацией
+    local targetCF = CFrame.new(finalPosition) * CFrame.Angles(math.rad(-90), 0, 0)
+    char:PivotTo(targetCF)
 
-    local flyStart = tick()
+    if bv and bv.Parent then bv.Velocity = Vector3.zero end
+    if bg and bg.Parent then bg.CFrame = targetCF end
+    hrp.AssemblyLinearVelocity = Vector3.zero
+    hrp.AssemblyAngularVelocity = Vector3.zero
 
-    while not IsTerminated and SETTINGS.AutoFarmEnabled and char and char.PrimaryPart and CurrentState == State.Action do
-        if tick() - flyStart > 6 then break end
-        local hum = char:FindFirstChildOfClass("Humanoid")
-        if hum and hum.Health <= 0 then break end
+    UpdateStatus("Фарм: ТП под монету (" .. math.floor(distance) .. " ст)", Color3.fromRGB(150, 255, 150))
 
-        if not targetCoin or not targetCoin.Parent or isCoinCollectedByServer(targetCoin) then
+    -- 2. Сетевой буфер (0.08с): даём серверу зафиксировать позицию персонажа
+    task.wait(0.08)
+
+    if not SETTINGS.AutoFarmEnabled or IsTerminated then return false end
+
+    -- 3. Двойной импульс касания (Head + HRP) снизу
+    local touchFn = firetouchtransmitter or firetouchinterest or (syn and syn.firetouchinterest)
+    pcall(function()
+        if targetCoin and targetCoin.Parent and touchFn then
+            local touchPart = char:FindFirstChild("Head") or hrp
+            touchFn(touchPart, targetCoin, 0)
+            task.wait()
+            touchFn(touchPart, targetCoin, 1)
+            if touchPart ~= hrp then
+                touchFn(hrp, targetCoin, 0)
+                task.wait()
+                touchFn(hrp, targetCoin, 1)
+            end
+        end
+    end)
+
+    -- 4. Ожидание подтверждения сбора сервером (ping-sync)
+    local collected = false
+    local waitLimit = tick() + 0.4
+    while tick() < waitLimit and not IsTerminated and SETTINGS.AutoFarmEnabled do
+        if isCoinCollectedByServer(targetCoin) then
+            collected = true
             break
         end
-
-        local currentPos = hrp.Position
-        local distance = (finalPosition - currentPos).Magnitude
-
-        if distance < 1.5 then
-            bv.Velocity = Vector3.zero
-
-            local waitStart = tick()
-            local collected = false
-
-            repeat
-                local touchFn = firetouchtransmitter or firetouchinterest or (syn and syn.firetouchinterest)
-                pcall(function()
-                    if targetCoin and targetCoin.Parent and touchFn then
-                        local touchPart = char:FindFirstChild("Head") or hrp
-                        touchFn(touchPart, targetCoin, 0)
-                        task.wait()
-                        touchFn(touchPart, targetCoin, 1)
-                        if touchPart ~= hrp then
-                            touchFn(hrp, targetCoin, 0)
-                            task.wait()
-                            touchFn(hrp, targetCoin, 1)
-                        end
-                    end
-                end)
-
-                -- Удерживаем персонажа строго в подземной точке finalPosition под монетой (без всплывания наверх!)
-                local toUnderPos = finalPosition - hrp.Position
-                if toUnderPos.Magnitude > 0.2 then
-                    bv.Velocity = toUnderPos.Unit * math.min(5, SETTINGS.Speed)
-                else
-                    bv.Velocity = Vector3.zero
-                end
-
-                if isCoinCollectedByServer(targetCoin) then
-                    collected = true
-                    break
-                end
-
-                task.wait(0.05)
-            until (tick() - waitStart > 1.5) or IsTerminated
-
-            return collected
-        end
-
-        local direction = (finalPosition - currentPos).Unit
-        bv.Velocity = direction * SETTINGS.Speed
-
-        RunService.Heartbeat:Wait()
+        task.wait(0.04)
     end
-    return false
+
+    -- 5. Адаптивная задержка скорости (имитация реального времени перехода без риска кика)
+    local moveDelay = math.clamp(distance / math.max(SETTINGS.Speed, 10), 0.15, 1.2)
+    local delayStart = tick()
+    while tick() - delayStart < moveDelay and not IsTerminated and SETTINGS.AutoFarmEnabled do
+        task.wait(0.04)
+    end
+
+    return collected
 end
 
 -- === ЛОГИКА СБОРА МОНЕТ ===
@@ -1572,11 +1560,9 @@ local function CollectCoins()
         local targetCoin = GetNearestCoin()
 
         if targetCoin then
-            UpdateStatus("Фарм: Лечу к монете", Color3.fromRGB(150, 255, 150))
-
             markCoinAsPending(targetCoin)
 
-            local pickedUp = moveToPositionPhysically(targetCoin.Position, targetCoin, bv, bg)
+            local pickedUp = TeleportCollectCoin(targetCoin.Position, targetCoin, bv, bg)
             if not SETTINGS.AutoFarmEnabled or IsTerminated then break end
 
             if pickedUp and rt.touchedCoins[targetCoin] == "pending" then
