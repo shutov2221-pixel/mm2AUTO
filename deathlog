@@ -1,0 +1,273 @@
+-- Death Logger GUI (Mobile Friendly)
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+
+local LocalPlayer = Players.LocalPlayer
+
+-- Функция безопасного размещения GUI (поддержка gethui / CoreGui / PlayerGui)
+local function getGuiParent()
+    if gethui then
+        return gethui()
+    elseif syn and syn.protect_gui then
+        local gui = Instance.new("Folder")
+        syn.protect_gui(gui)
+        gui.Parent = game:GetService("CoreGui")
+        return gui
+    elseif game:GetService("CoreGui"):FindFirstChild("RobloxGui") then
+        return game:GetService("CoreGui")
+    else
+        return LocalPlayer:WaitForChild("PlayerGui")
+    end
+end
+
+-- Удаляем старую версию интерфейса, если она запущена
+local existing = getGuiParent():FindFirstChild("DeathLoggerUI")
+if existing then existing:Destroy() end
+
+-- Создание интерфейса
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "DeathLoggerUI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = getGuiParent()
+
+local MainFrame = Instance.new("Frame")
+MainFrame.Name = "MainFrame"
+MainFrame.Size = UDim2.new(0, 290, 0, 220)
+MainFrame.Position = UDim2.new(0.05, 0, 0.25, 0)
+MainFrame.BackgroundColor3 = Color3.fromRGB(24, 24, 28)
+MainFrame.BorderSizePixel = 0
+MainFrame.Active = true
+MainFrame.Parent = ScreenGui
+
+local UICorner = Instance.new("UICorner", MainFrame)
+UICorner.CornerRadius = UDim.new(0, 10)
+
+local UIStroke = Instance.new("UIStroke", MainFrame)
+UIStroke.Color = Color3.fromRGB(60, 60, 75)
+UIStroke.Thickness = 1.2
+
+-- Заголовок
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, -60, 0, 30)
+Title.Position = UDim2.new(0, 10, 0, 0)
+Title.Text = " Death Logger"
+Title.Font = Enum.Font.GothamBold
+Title.TextSize = 13
+Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.BackgroundTransparency = 1
+Title.Parent = MainFrame
+
+-- Кнопка очистки
+local ClearBtn = Instance.new("TextButton")
+ClearBtn.Size = UDim2.new(0, 45, 0, 20)
+ClearBtn.Position = UDim2.new(1, -55, 0, 5)
+ClearBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+ClearBtn.Text = "Clear"
+ClearBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+ClearBtn.Font = Enum.Font.Gotham
+ClearBtn.TextSize = 11
+ClearBtn.Parent = MainFrame
+Instance.new("UICorner", ClearBtn).CornerRadius = UDim.new(0, 5)
+
+-- Скролл-контейнер для логов
+local Scroll = Instance.new("ScrollingFrame")
+Scroll.Size = UDim2.new(1, -16, 1, -40)
+Scroll.Position = UDim2.new(0, 8, 0, 32)
+Scroll.BackgroundTransparency = 1
+Scroll.ScrollBarThickness = 3
+Scroll.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 120)
+Scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+Scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+Scroll.Parent = MainFrame
+
+local UIListLayout = Instance.new("UIListLayout")
+UIListLayout.Padding = UDim.new(0, 6)
+UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+UIListLayout.Parent = Scroll
+
+-- Перетаскивание интерфейса для мобильных (Touch) и ПК (Mouse)
+local dragging, dragStart, startPos
+MainFrame.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = MainFrame.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - dragStart
+        MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+end)
+
+ClearBtn.MouseButton1Click:Connect(function()
+    for _, item in ipairs(Scroll:GetChildren()) do
+        if item:IsA("Frame") then item:Destroy() end
+    end
+end)
+
+-- Функция добавления записи в лог
+local function addLogEntry(reason, details, color)
+    local entry = Instance.new("Frame")
+    entry.Size = UDim2.new(1, -6, 0, 0)
+    entry.AutomaticSize = Enum.AutomaticSize.Y
+    entry.BackgroundColor3 = Color3.fromRGB(32, 32, 38)
+    entry.Parent = Scroll
+    Instance.new("UICorner", entry).CornerRadius = UDim.new(0, 6)
+    
+    local entryStroke = Instance.new("UIStroke", entry)
+    entryStroke.Color = color or Color3.fromRGB(70, 70, 85)
+    entryStroke.Thickness = 1
+
+    local timeStr = os.date("%H:%M:%S")
+
+    local titleLbl = Instance.new("TextLabel")
+    titleLbl.Size = UDim2.new(1, -10, 0, 18)
+    titleLbl.Position = UDim2.new(0, 5, 0, 2)
+    titleLbl.Text = string.format("[%s] %s", timeStr, reason)
+    titleLbl.Font = Enum.Font.GothamBold
+    titleLbl.TextSize = 11
+    titleLbl.TextColor3 = color or Color3.fromRGB(255, 255, 255)
+    titleLbl.TextXAlignment = Enum.TextXAlignment.Left
+    titleLbl.BackgroundTransparency = 1
+    titleLbl.Parent = entry
+
+    local descLbl = Instance.new("TextLabel")
+    descLbl.Size = UDim2.new(1, -10, 0, 0)
+    descLbl.Position = UDim2.new(0, 5, 0, 20)
+    descLbl.AutomaticSize = Enum.AutomaticSize.Y
+    descLbl.Text = details
+    descLbl.Font = Enum.Font.Gotham
+    descLbl.TextSize = 10
+    descLbl.TextColor3 = Color3.fromRGB(180, 180, 190)
+    descLbl.TextXAlignment = Enum.TextXAlignment.Left
+    descLbl.TextWrapped = true
+    descLbl.BackgroundTransparency = 1
+    descLbl.Parent = entry
+
+    local pad = Instance.new("UIPadding", entry)
+    pad.PaddingBottom = UDim.new(0, 6)
+end
+
+-- Система мониторинга персонажа
+local recentVelocities = {}
+local maxStored = 10
+
+local function trackCharacter(char)
+    local hrp = char:WaitForChild("HumanoidRootPart", 5)
+    local hum = char:WaitForChild("Humanoid", 5)
+    if not hrp or not hum then return end
+
+    table.clear(recentVelocities)
+
+    local connection
+    connection = RunService.Heartbeat:Connect(function()
+        if not hrp or not hrp.Parent then
+            connection:Disconnect()
+            return
+        end
+        local currentVel = hrp.AssemblyLinearVelocity.Magnitude
+        table.insert(recentVelocities, {vel = currentVel, pos = hrp.Position, time = os.clock()})
+        if #recentVelocities > maxStored then
+            table.remove(recentVelocities, 1)
+        end
+    end)
+
+    hum.Died:Connect(function()
+        connection:Disconnect()
+
+        -- Анализируем сохраненные метрики перед смертью
+        local highestVel = 0
+        local lastPos = hrp and hrp.Position or Vector3.new(0, 0, 0)
+
+        for _, sample in ipairs(recentVelocities) do
+            if sample.vel > highestVel then
+                highestVel = math.floor(sample.vel)
+                lastPos = sample.pos
+            end
+        end
+
+        -- Проверка ближайших игроков и наличия у них ножа (Knife / Tool)
+        local nearestPlayer = nil
+        local minDistance = math.huge
+        local playerHadKnife = false
+        local equippedToolName = "None"
+
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LocalPlayer and plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then
+                local dist = (plr.Character.HumanoidRootPart.Position - lastPos).Magnitude
+                if dist < minDistance then
+                    minDistance = math.floor(dist)
+                    nearestPlayer = plr
+
+                    -- Проверяем экипированные инструменты
+                    local tool = plr.Character:FindFirstChildOfClass("Tool")
+                    if tool then
+                        equippedToolName = tool.Name
+                        local lowerName = string.lower(tool.Name)
+                        if lowerName:find("knife") or lowerName:find("blade") or lowerName:find("sword") then
+                            playerHadKnife = true
+                        end
+                    end
+                end
+            end
+        end
+
+        -- Классификация причины смерти
+        local reason = "Неизвестная смерть"
+        local details = ""
+        local entryColor = Color3.fromRGB(200, 200, 200)
+
+        -- 1. Fling (Физический запуск)
+        -- Обычная скорость ходьбы 16, спринт ~25-30. Если скорость > 300 - это явный импульс/fling.
+        if highestVel >= 300 then
+            reason = " FLING (Флинг)"
+            entryColor = Color3.fromRGB(255, 75, 75)
+            details = string.format(
+                "Макс. импульс скорости: %d studs/s\nПозиция: (X: %d, Y: %d, Z: %d)\nБлижайший игрок: %s (%d studs)",
+                highestVel, lastPos.X, lastPos.Y, lastPos.Z,
+                nearestPlayer and nearestPlayer.Name or "Нет", minDistance
+            )
+        -- 2. Убийство ножом / контакт
+        elseif minDistance <= 15 and (playerHadKnife or equippedToolName ~= "None") then
+            reason = " УДАР ОРУЖИЕМ (Нож / Tool)"
+            entryColor = Color3.fromRGB(255, 170, 0)
+            details = string.format(
+                "Убийца (вероятно): %s\nОружие в руках: %s\nДистанция: %d studs\nСкорость перед смертью: %d studs/s",
+                nearestPlayer.Name, equippedToolName, minDistance, highestVel
+            )
+        -- 3. Вылет за пределы / Падение в пустоту
+        elseif lastPos.Y < -50 or (Workspace.FallenPartsDestroyHeight and lastPos.Y <= Workspace.FallenPartsDestroyHeight + 20) then
+            reason = " ПАДЕНИЕ В ПУСТОТУ (Void)"
+            entryColor = Color3.fromRGB(100, 160, 255)
+            details = string.format("Координата Y: %d\nСкорость: %d studs/s", lastPos.Y, highestVel)
+        -- 4. Мгновенный Kill (Урон скриптом / Remote)
+        else
+            reason = " МОМЕНТАЛЬНЫЙ СБРОС HP / DAMAGE"
+            entryColor = Color3.fromRGB(200, 100, 255)
+            details = string.format(
+                "Скорость оставалась в норме: %d studs/s\nБлижайший игрок: %s (Дистанция: %d studs, Tool: %s)",
+                highestVel, nearestPlayer and nearestPlayer.Name or "Нет", minDistance, equippedToolName
+            )
+        end
+
+        addLogEntry(reason, details, entryColor)
+    end)
+end
+
+if LocalPlayer.Character then
+    task.spawn(trackCharacter, LocalPlayer.Character)
+end
+
+LocalPlayer.CharacterAdded:Connect(trackCharacter)
+addLogEntry(" СИСТЕМА", "Death Logger запущен и готов к отслеживанию.", Color3.fromRGB(100, 255, 120))
