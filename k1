@@ -1,11 +1,11 @@
 --!strict
 -- =====================================================================
--- MM2 ASSASSIN ULTRA-FAST KILLER [EVENT-DRIVEN v4.0]
--- Скоростное уничтожение целей без искусственных задержек (0.3-0.5с на всех):
--- 1. Реактивное срабатывание на смену таргета (Event-Driven GetPropertyChangedSignal)
--- 2. Мгновенный 1-Pulse FireTouch (0.001 сек)
--- 3. Кэширование игроков для нулевой задержки поиска
--- 4. Защита от зависаний и полная диагностика данных Assassin
+-- MM2 ASSASSIN ULTRA-FAST KILLER [TURBO v4.1 - AUTO-RETRY & KILL CONFIRM]
+-- Исправлен баг со ступором:
+-- 1. Добавлена проверка смерти цели: если ник в TargetName не сменился и цель
+--    еще жива, скрипт автоматически повторяет удары каждые 0.06с до победного!
+-- 2. Надежный двойной импульс касания (Double-Pulse) для 100% урона.
+-- 3. Реактивный перехват через GetPropertyChangedSignal + постоянный watchdog.
 -- =====================================================================
 
 local Players = game:GetService("Players")
@@ -71,7 +71,7 @@ local TitleLabel = Instance.new("TextLabel")
 TitleLabel.Size = UDim2.new(1, -70, 1, 0)
 TitleLabel.Position = UDim2.new(0, 10, 0, 0)
 TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "⚡ MM2 ASSASSIN TURBO v4.0"
+TitleLabel.Text = "⚡ MM2 ASSASSIN TURBO v4.1"
 TitleLabel.TextColor3 = Color3.fromRGB(255, 215, 80)
 TitleLabel.Font = Enum.Font.GothamBold
 TitleLabel.TextSize = 12
@@ -100,7 +100,7 @@ CloseBtn.TextSize = 11
 CloseBtn.Parent = TitleBar
 Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 5)
 
--- Dragging
+-- Перетаскивание
 local dragging, dragStart, startPos
 TitleBar.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
@@ -120,7 +120,7 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
--- Controls
+-- Контейнер кнопок
 local ControlsFrame = Instance.new("Frame")
 ControlsFrame.Size = UDim2.new(1, -16, 0, 56)
 ControlsFrame.Position = UDim2.new(0, 8, 0, 36)
@@ -141,7 +141,7 @@ local function CreateButton(text: string, color: Color3, pos: UDim2, size: UDim2
     return btn
 end
 
--- Ряд 1: Скан | Взять нож | Проверить данные
+-- Ряд 1: Скан | Взять нож | Сниффер | Очистить
 local BtnScan = CreateButton("🔍 СКАН", Color3.fromRGB(35, 120, 185), UDim2.new(0, 0, 0, 0), UDim2.new(0.32, -2, 0, 26))
 local BtnEquip = CreateButton("🗡 НОЖ", Color3.fromRGB(180, 110, 30), UDim2.new(0.32, 2, 0, 0), UDim2.new(0.28, -2, 0, 26))
 local BtnInspect = CreateButton("🕵️ СНИФФЕР", Color3.fromRGB(110, 60, 160), UDim2.new(0.60, 2, 0, 0), UDim2.new(0.22, -2, 0, 26))
@@ -162,7 +162,7 @@ local StatusLabel = Instance.new("TextLabel")
 StatusLabel.Size = UDim2.new(1, -10, 1, 0)
 StatusLabel.Position = UDim2.new(0, 6, 0, 0)
 StatusLabel.BackgroundTransparency = 1
-StatusLabel.Text = "> Турбо-режим готов к мгновенной зачистке"
+StatusLabel.Text = "> Турбо-режим v4.1 готов к работе"
 StatusLabel.TextColor3 = Color3.fromRGB(180, 220, 255)
 StatusLabel.Font = Enum.Font.GothamSemibold
 StatusLabel.TextSize = 10
@@ -175,7 +175,7 @@ local function UpdateStatus(text: string, color: Color3?)
     StatusLabel.TextColor3 = color or Color3.fromRGB(220, 220, 220)
 end
 
--- Console
+-- Консоль логов
 local ConsoleFrame = Instance.new("Frame")
 ConsoleFrame.Size = UDim2.new(1, -16, 0, 160)
 ConsoleFrame.Position = UDim2.new(0, 8, 0, 122)
@@ -258,7 +258,7 @@ local function Log(message: string, msgType: string?)
 end
 
 -- =====================================================================
--- БЫСТРЫЙ ПОИСК ЦЕЛИ И КЭШИРОВАНИЕ ИГРОКОВ
+-- ПОИСК ТАРГЕТА В UI
 -- =====================================================================
 local function FindTargetLabel(): (TextLabel?, string)
     local pGui = LocalPlayer:FindFirstChildOfClass("PlayerGui") or LocalPlayer:FindFirstChild("PlayerGui")
@@ -307,7 +307,6 @@ local function CleanNickname(raw: string): string
     return cleaned
 end
 
--- Быстрый поиск игрока без долгих сравнений
 local function FindPlayerByName(cleanName: string): (Player?, string)
     if cleanName == "" or cleanName == "Label" or cleanName == "None" then
         return nil, "Имя пусто"
@@ -397,7 +396,7 @@ local function InspectAndEquipKnife(): Tool?
 end
 
 -- =====================================================================
--- ТУРБО-УДАР (0.001 СЕКУНДЫ БЕЗ СНА)
+-- НАДЕЖНЫЙ ТУРБО-УДАР (DOUBLE-PULSE FIRETOUCH)
 -- =====================================================================
 local function TurboKill(targetPlayer: Player, knife: Tool): boolean
     local targetChar = targetPlayer.Character
@@ -414,7 +413,10 @@ local function TurboKill(targetPlayer: Player, knife: Tool): boolean
     pcall(function() knife:Activate() end)
 
     if firetouchinterest then
+        -- Двойной импульс касания для 100% срабатывания физики сервера
         pcall(function()
+            firetouchinterest(targetHRP, handle, 0)
+            firetouchinterest(targetHRP, handle, 1)
             firetouchinterest(targetHRP, handle, 0)
             firetouchinterest(targetHRP, handle, 1)
         end)
@@ -447,10 +449,11 @@ local function RunSingleTargetKill()
 end
 
 -- =====================================================================
--- РЕАКТИВНАЯ ТУРБО-ЦЕПОЧКА (EVENT-DRIVEN: 0.3-0.5 СЕКУНДЫ НА ВСЕХ)
+-- АВТО-ЦЕПОЧКА С КОНТРОЛЕМ СМЕРТИ (AUTO-RETRY ДО СМЕНЫ ТАРГЕТА)
 -- =====================================================================
 local chainConnection: RBXScriptConnection? = nil
-local lastStruckTargetName = ""
+local activeTargetName = ""
+local killAttemptsForTarget = 0
 
 local function StopKillLoop()
     isRunning = false
@@ -464,24 +467,34 @@ local function StopKillLoop()
     Log("Турбо-цепочка остановлена", "INFO")
 end
 
-local function ProcessCurrentTargetInstant(label: TextLabel, knife: Tool)
+-- Функция нанесения удара по текущей цели из UI
+local function AttackTargetFromLabel(label: TextLabel, knife: Tool)
     local rawText = label.Text
     local cleanName = CleanNickname(rawText)
     if cleanName == "" or cleanName == "Label" or cleanName == "None" then return end
-    if cleanName == lastStruckTargetName then return end
+
+    -- Если пришел новый таргет — сбрасываем счетчик попыток
+    if cleanName ~= activeTargetName then
+        activeTargetName = cleanName
+        killAttemptsForTarget = 0
+    end
 
     local targetPlayer = FindPlayerByName(cleanName)
-    if targetPlayer and targetPlayer.Character then
-        local hum = targetPlayer.Character:FindFirstChildOfClass("Humanoid")
-        if hum and hum.Health > 0 then
-            lastStruckTargetName = cleanName
-            local tStart = tick()
-            local success = TurboKill(targetPlayer, knife)
-            if success then
-                local ms = math.floor((tick() - tStart) * 1000)
-                Log(string.format("⚡ [%d мс] Ликвидирован: %s", ms, targetPlayer.DisplayName), "KILL")
-                UpdateStatus("Убит: " .. targetPlayer.DisplayName, Color3.fromRGB(255, 80, 80))
-            end
+    if not targetPlayer or not targetPlayer.Character then return end
+
+    local hum = targetPlayer.Character:FindFirstChildOfClass("Humanoid")
+    -- Проверяем: если цель ВСЁ ЕЩЕ жива, бьем!
+    if hum and hum.Health > 0 then
+        killAttemptsForTarget = killAttemptsForTarget + 1
+        local tStart = tick()
+        TurboKill(targetPlayer, knife)
+        local ms = math.floor((tick() - tStart) * 1000)
+
+        if killAttemptsForTarget == 1 then
+            Log(string.format("⚡ [%d мс] Атака цели: %s", ms, targetPlayer.DisplayName), "KILL")
+            UpdateStatus("Атака: " .. targetPlayer.DisplayName, Color3.fromRGB(255, 80, 80))
+        elseif killAttemptsForTarget % 3 == 0 then
+            Log(string.format("🔄 Добивание: %s (Попытка %d)", targetPlayer.DisplayName, killAttemptsForTarget), "WARN")
         end
     end
 end
@@ -495,8 +508,8 @@ local function StartKillLoop()
     isRunning = true
     BtnKill.Text = "⚡ СТОП ТУРБО"
     BtnKill.BackgroundColor3 = Color3.fromRGB(40, 180, 50)
-    UpdateStatus("Турбо-цепочка АКТИВНА (Реактивный режим)", Color3.fromRGB(100, 255, 100))
-    Log("--- СТАРТ ТУРБО-ЦЕПОЧКИ (EVENT-DRIVEN) ---", "KILL")
+    UpdateStatus("Турбо-цепочка АКТИВНА (Auto-Retry)", Color3.fromRGB(100, 255, 100))
+    Log("--- СТАРТ ТУРБО-ЦЕПОЧКИ v4.1 ---", "KILL")
 
     task.spawn(function()
         local knife = InspectAndEquipKnife()
@@ -506,29 +519,30 @@ local function StartKillLoop()
             return
         end
 
-        local label, path = FindTargetLabel()
+        local label = FindTargetLabel()
         if not label then
             Log("Ошибка: TargetName не найден в UI!", "ERROR")
             StopKillLoop()
             return
         end
 
-        lastStruckTargetName = ""
+        activeTargetName = ""
+        killAttemptsForTarget = 0
 
-        -- 1. СРАЗУ бьем первую текущую цель без ожидания!
-        ProcessCurrentTargetInstant(label, knife)
+        -- 1. Сразу бьем текущую цель
+        AttackTargetFromLabel(label, knife)
 
-        -- 2. РЕАКТИВНО вешаем слушатель: как только сервер присылает новый текст — мгновенный удар за 0.001с!
+        -- 2. Реактивный перехват момента смены текста в UI
         if chainConnection then chainConnection:Disconnect() end
         chainConnection = label:GetPropertyChangedSignal("Text"):Connect(function()
             if not isRunning or isTerminated then return end
-            ProcessCurrentTargetInstant(label, knife)
+            AttackTargetFromLabel(label, knife)
         end)
 
-        -- Фоновый сторожевой цикл (для проверки окончания раунда и смены label)
+        -- 3. Watchdog-цикл (гарантия добивания: каждые 0.05с проверяет, жива ли цель)
         local emptyCounter = 0
         while isRunning and not isTerminated do
-            task.wait(0.08)
+            task.wait(0.05)
 
             local myChar = LocalPlayer.Character
             local myHum = myChar and myChar:FindFirstChildOfClass("Humanoid")
@@ -537,28 +551,29 @@ local function StartKillLoop()
                 break
             end
 
-            -- Держим нож в руке
+            -- Убеждаемся что нож наготове
             if knife.Parent ~= myChar then
                 knife = InspectAndEquipKnife() or knife
             end
 
-            -- Проверяем, есть ли активная цель
+            -- Получаем актуальный лейбл
             local currentLabel = FindTargetLabel()
             local raw = currentLabel and currentLabel.Text or ""
             local clean = CleanNickname(raw)
 
             if clean == "" or clean == "Label" or clean == "None" then
                 emptyCounter = emptyCounter + 1
-                if emptyCounter >= 12 then -- ~1 секунда без таргетов = раунд окончен!
+                -- Если целей нет более 1.2 секунды — раунд завершен
+                if emptyCounter >= 18 then
                     Log("Таргеты закончились! Все игроки устранены.", "SUCCESS")
                     UpdateStatus("РАУНД ВЫИГРАН! Победа.", Color3.fromRGB(100, 255, 120))
                     break
                 end
             else
                 emptyCounter = 0
-                -- Резервный вызов (если сигнал пропал)
-                if clean ~= lastStruckTargetName and currentLabel then
-                    ProcessCurrentTargetInstant(currentLabel, knife)
+                -- ПРОВЕРКА ЦЕЛИ: если таргет в UI висит, бьем пока он не погибнет!
+                if currentLabel then
+                    AttackTargetFromLabel(currentLabel, knife)
                 end
             end
         end
@@ -568,24 +583,15 @@ local function StartKillLoop()
 end
 
 -- =====================================================================
--- СНИФФЕР ДАННЫХ ASSASSIN (ИССЛЕДОВАНИЕ СЕРВЕРНЫХ ТАБЛИЦ И АТРИБУТОВ)
+-- СНИФФЕР ДАННЫХ ASSASSIN
 -- =====================================================================
 local function InspectAssassinData()
     Log("--- СНИФФЕР ДАННЫХ ASSASSIN ---", "TARGET")
-    local foundData = false
-
-    -- 1. Проверка атрибутов LocalPlayer
     local myAttrs = LocalPlayer:GetAttributes()
     local attrList = {}
-    for k, v in pairs(myAttrs) do
-        table.insert(attrList, string.format("%s = %s", tostring(k), tostring(v)))
-    end
-    if #attrList > 0 then
-        Log("Атрибуты LocalPlayer: " .. table.concat(attrList, ", "), "INFO")
-        foundData = true
-    end
+    for k, v in pairs(myAttrs) do table.insert(attrList, string.format("%s = %s", tostring(k), tostring(v))) end
+    if #attrList > 0 then Log("Атрибуты LocalPlayer: " .. table.concat(attrList, ", "), "INFO") end
 
-    -- 2. Проверка атрибутов остальных игроков (может там виден их Target?)
     local targetAttrFound = false
     for _, plr in ipairs(Players:GetPlayers()) do
         if plr ~= LocalPlayer then
@@ -598,19 +604,8 @@ local function InspectAssassinData()
             end
         end
     end
-    if not targetAttrFound then
-        Log("Атрибуты Target у других игроков закрыты сервером.", "WARN")
-    end
-
-    -- 3. Проверка ReplicatedStorage
-    local repAssassin = ReplicatedStorage:FindFirstChild("Assassin") or ReplicatedStorage:FindFirstChild("Game") or ReplicatedStorage:FindFirstChild("Remotes")
-    if repAssassin then
-        local children = {}
-        for _, c in ipairs(repAssassin:GetChildren()) do table.insert(children, c.Name) end
-        Log("Объекты в ReplicatedStorage: " .. table.concat(children, ", "), "INFO")
-    end
-
-    UpdateStatus("Сниффер завершен (см. консоль)", Color3.fromRGB(180, 220, 255))
+    if not targetAttrFound then Log("Атрибуты Target у других игроков скрыты сервером.", "WARN") end
+    UpdateStatus("Сниффер завершен", Color3.fromRGB(180, 220, 255))
 end
 
 -- Привязка кнопок
@@ -645,7 +640,6 @@ end
 
 CloseBtn.MouseButton1Click:Connect(Terminate)
 
-Log("MM2 Assassin Turbo v4.0 готов!", "SUCCESS")
-Log("Удалены все задержки. Реакция на сервер: 0.001 сек.", "INFO")
-Log("• Нажмите '⚡ ТУРБО-ЦЕПОЧКА' — выкосит всех за доли секунды!", "KILL")
-Log("• Нажмите '🕵️ СНИФФЕР' — проверит скрытые атрибуты сервера MM2", "TARGET")
+Log("MM2 Assassin Turbo v4.1 готов!", "SUCCESS")
+Log("Исправлен ступор: добавлен Auto-Retry до смены ника в TargetName.", "INFO")
+Log("• Нажмите '⚡ ТУРБО-ЦЕПОЧКА' — скосит всех без остановок!", "KILL")
