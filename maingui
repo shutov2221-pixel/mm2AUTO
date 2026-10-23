@@ -48,7 +48,8 @@ local SETTINGS = {
     PotatoMode = false,
     BagFullMode = "Reset", -- "Reset" | "KillAll"
     GameMode = (initialSavedTwin ~= "" and "Twin" or "Solo"), -- "Twin" | "Solo"
-    TwinName = initialSavedTwin
+    TwinName = initialSavedTwin,
+    UnderfloorOffset = 3.8 -- Смещение под карту (студы ниже монеты)
 }
 
 local MAP_PRIORITIES = {
@@ -1439,13 +1440,14 @@ local function isCoinCollectedByServer(coin)
     return false
 end
 
--- === ПЕРЕДВИЖЕНИЕ ДЛЯ СБОРА МОНЕТ ===
+-- === ПЕРЕДВИЖЕНИЕ ДЛЯ СБОРА МОНЕТ (ПОД КАРТОЙ) ===
 local function moveToPositionPhysically(targetPosition, targetCoin, bv, bg)
     local char = rt:Character()
     if not char or not char.PrimaryPart then return false end
 
     local hrp = char.PrimaryPart
-    local finalPosition = targetPosition + Vector3.new(0, 0.5, 0)
+    local underfloorOffset = SETTINGS.UnderfloorOffset or 3.8
+    local finalPosition = targetPosition - Vector3.new(0, underfloorOffset, 0)
 
     local startPos = hrp.Position
     local lookAtPos = Vector3.new(finalPosition.X, startPos.Y, finalPosition.Z)
@@ -1477,19 +1479,24 @@ local function moveToPositionPhysically(targetPosition, targetCoin, bv, bg)
                 local touchFn = firetouchtransmitter or firetouchinterest or (syn and syn.firetouchinterest)
                 pcall(function()
                     if targetCoin and targetCoin.Parent and touchFn then
-                        touchFn(hrp, targetCoin, 0)
+                        local touchPart = char:FindFirstChild("Head") or hrp
+                        touchFn(touchPart, targetCoin, 0)
                         task.wait()
-                        touchFn(hrp, targetCoin, 1)
+                        touchFn(touchPart, targetCoin, 1)
+                        if touchPart ~= hrp then
+                            touchFn(hrp, targetCoin, 0)
+                            task.wait()
+                            touchFn(hrp, targetCoin, 1)
+                        end
                     end
                 end)
 
-                if targetCoin and targetCoin.Parent then
-                    local toCoinCenter = targetCoin.Position - hrp.Position
-                    if toCoinCenter.Magnitude > 0.05 then
-                        bv.Velocity = toCoinCenter.Unit * math.min(10, SETTINGS.Speed)
-                    else
-                        bv.Velocity = Vector3.zero
-                    end
+                -- Удерживаем персонажа строго в подземной точке finalPosition под монетой (без всплывания наверх!)
+                local toUnderPos = finalPosition - hrp.Position
+                if toUnderPos.Magnitude > 0.2 then
+                    bv.Velocity = toUnderPos.Unit * math.min(5, SETTINGS.Speed)
+                else
+                    bv.Velocity = Vector3.zero
                 end
 
                 if isCoinCollectedByServer(targetCoin) then
