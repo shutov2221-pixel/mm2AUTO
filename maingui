@@ -6,8 +6,21 @@ local SETTINGS = {
     Speed = 22,
     FpsCap = 20,
     PotatoMode = false,
-    BagFullMode = "Reset"  -- "Reset" | "KillAll"
+    BagFullMode = "Reset",  -- "Reset" | "KillAll"
+    TwinMode = true,        -- true: с твинком (исключение), false: соло (оставить 1 выжившего)
+    TwinException = ""      -- ник твинка
 }
+
+local FARM_CFG = "mm2_farm_exception.txt"
+pcall(function()
+    local rf = readfile or (isfile and isfile(FARM_CFG) and readfile)
+    if rf then
+        local c = rf(FARM_CFG)
+        if c and typeof(c) == "string" then
+            SETTINGS.TwinException = string.gsub(c, "^%s*(.-)%s*$", "%1")
+        end
+    end
+end)
 
 local MAP_PRIORITIES = {
     "Hospital 3", "House 2", "Office 3", "Bank 2", "Workplace",
@@ -474,23 +487,34 @@ local function GetCurrentTarget(): (Player?, string?)
     return targetPlayer, targetName
 end
 
--- === УПРАВЛЕНИЕ ОРУЖИЕМ (ЭКИПИРОВКА НОЖА) ===
-local function EquipKnife(): Tool?
+-- === ПОИСК СЕТЕВЫХ СОБЫТИЙ (REMOTES) ===
+local function FindRemoteEvent(name: string): RemoteEvent?
+    local direct = ReplicatedStorage:FindFirstChild(name)
+    if direct and direct:IsA("RemoteEvent") then return direct end
+    local deep = ReplicatedStorage:FindFirstChild(name, true)
+    if deep and deep:IsA("RemoteEvent") then return deep end
+    for _, item in ipairs(ReplicatedStorage:GetDescendants()) do
+        if item:IsA("RemoteEvent") and item.Name == name then
+            return item
+        end
+    end
+    return nil
+end
+
+-- === УПРАВЛЕНИЕ ОРУЖИЕМ (ЭКИПИРОВКА И СКРЫТИЕ НОЖА) ===
+local function GetEquippedOrBackpackKnife(): Tool?
     local char = LocalPlayer.Character or rt:Character()
     if not char then return nil end
 
-    -- Уже держим нож в руках?
-    local currentTool = char:FindFirstChildOfClass("Tool")
-    if currentTool then
-        return currentTool
+    for _, item in ipairs(char:GetChildren()) do
+        if item:IsA("Tool") and (item.Name == "Knife" or string.find(string.lower(item.Name), "knife")) then
+            return item
+        end
     end
 
-    -- Ищем в Backpack
     local backpack = LocalPlayer:FindFirstChildOfClass("Backpack") or LocalPlayer:FindFirstChild("Backpack")
-    local knife: Tool? = nil
-
     if backpack then
-        knife = backpack:FindFirstChild("Knife") :: Tool?
+        local knife = backpack:FindFirstChild("Knife") :: Tool?
         if not knife then
             for _, item in ipairs(backpack:GetChildren()) do
                 if item:IsA("Tool") and (item.Name == "Knife" or string.find(string.lower(item.Name), "knife")) then
@@ -499,232 +523,246 @@ local function EquipKnife(): Tool?
                 end
             end
         end
-
-        -- Резерв: любой доступный Tool в рюкзаке
-        if not knife then
-            knife = backpack:FindFirstChildOfClass("Tool")
+        if knife then
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if hum then pcall(function() hum:EquipTool(knife) end) end
+            task.wait(0.01)
+            return knife
         end
     end
-
-    if knife then
-        local hum = char:FindFirstChildOfClass("Humanoid")
-        if hum then
-            pcall(function() hum:EquipTool(knife) end)
-        end
-        if knife.Parent ~= char then
-            pcall(function() knife.Parent = char end)
-        end
-        return knife
-    end
-
     return nil
 end
 
--- Флаги ручного запуска и интерфейса Kill All
-local ManualKillBtn: TextButton = nil :: any
-
--- Режим зависания в воздухе во время Kill All
-local function EnableKillFlight(hrp: BasePart)
-    if not hrp or not hrp.Parent then return end
-    local bv = hrp:FindFirstChild("KillFlightVelocity") or Instance.new("BodyVelocity")
-    bv.Name = "KillFlightVelocity"
-    bv.MaxForce = Vector3.new(9e9, 9e9, 9e9)
-    bv.Velocity = Vector3.zero
-    bv.Parent = hrp
-end
-
-local function DisableKillFlight(hrp: BasePart?)
-    if not hrp then return end
-    local bv = hrp:FindFirstChild("KillFlightVelocity")
-    if bv then
-        pcall(function() bv:Destroy() end)
+local function UnequipKnife()
+    local char = LocalPlayer.Character or rt:Character()
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        pcall(function() hum:UnequipTools() end)
     end
 end
 
--- Безопасная эмуляция клика (замаха ножа) через VirtualUser без зависания рендера
-local function EmulateAttackClick(tool: Tool?)
-    local success = pcall(function()
-        VirtualUser:CaptureController()
-        VirtualUser:Button1Down(Vector2.new(0, 0), Workspace.CurrentCamera.CFrame)
-        task.wait(0.015)
-        VirtualUser:Button1Up(Vector2.new(0, 0), Workspace.CurrentCamera.CFrame)
-    end)
-
-    if not success then
-        pcall(function()
-            local mClick = (mouse1click or (input and input.mouse1click))
-            if mClick then mClick() end
-        end)
-    end
-
-    if not success and tool then
-        pcall(function() tool:Activate() end)
-    end
-end
-
-local function StopKillAll()
-    isKillRunning = false
-    if ManualKillBtn then
-        ManualKillBtn.Text = "KILL ALL: OFF"
-        ManualKillBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
-    end
-    if LocalPlayer.Character then
-        local hrp = LocalPlayer.Character:FindFirstChild("HumanoidRootPart") or LocalPlayer.Character.PrimaryPart
-        DisableKillFlight(hrp)
-    end
-end
-
--- === УБИЙСТВО ОДНОЙ ЦЕЛИ ===
-local function KillTarget(targetPlayer: Player)
-    if not targetPlayer or not targetPlayer.Character then return end
-
-    local myChar = LocalPlayer.Character or rt:Character()
-    if not myChar then return end
-
-    local myHRP = myChar:FindFirstChild("HumanoidRootPart") or myChar:FindFirstChild("Torso") or myChar.PrimaryPart
-    local myHum = myChar:FindFirstChildOfClass("Humanoid")
-    if not myHRP or not myHum or myHum.Health <= 0 then return end
-
+-- === ТУРБО-УДАР (DOUBLE-PULSE FIRETOUCH) ===
+local function TurboKill(targetPlayer: Player, knife: Tool): boolean
     local targetChar = targetPlayer.Character
-    local targetHRP = targetChar:FindFirstChild("HumanoidRootPart") or targetChar:FindFirstChild("Torso") or targetChar.PrimaryPart
+    if not targetChar then return false end
+
+    local targetHRP = targetChar:FindFirstChild("HumanoidRootPart") or targetChar:FindFirstChild("Torso") :: BasePart?
     local targetHum = targetChar:FindFirstChildOfClass("Humanoid")
-    if not targetHRP or not targetHum or targetHum.Health <= 0 then return end
+    local handle = knife:FindFirstChild("Handle") :: BasePart?
 
-    UpdateStatus("Kill: → " .. targetPlayer.DisplayName .. " (" .. targetPlayer.Name .. ")", Color3.fromRGB(255, 80, 80))
-
-    -- 1. Включаем полет перед телепортом (защита от падения в пропасть/пустоту)
-    EnableKillFlight(myHRP)
-
-    -- 2. Достаём нож
-    local tool = EquipKnife()
-    if not tool then
-        UpdateStatus("Kill: Нож не найден в инвентаре!", Color3.fromRGB(255, 120, 120))
+    if not targetHRP or not targetHum or targetHum.Health <= 0 or not handle then
+        return false
     end
 
-    -- 3. СНАЧАЛА замахиваемся (эмуляция клика)
-    EmulateAttackClick(tool)
-    task.wait(0.03)
+    pcall(function() knife:Activate() end)
 
-    -- 4. ТЕЛЕПОРТИРУЕМСЯ СРАЗУ ЗА СПИНУ ЦЕЛИ (+1.3 studs сзади)
-    pcall(function()
-        local behindCF = targetHRP.CFrame * CFrame.new(0, 0, 1.3)
-        myHRP.CFrame = behindCF
-        myHRP.AssemblyLinearVelocity = Vector3.zero
-    end)
-
-    local attackStartTime = tick()
-    local lastSwingTime = tick()
-
-    while not IsTerminated and isKillRunning do
-        -- Не застревать дольше 3.5 сек на неуязвимом/забагованном игроке
-        if tick() - attackStartTime > 3.5 then break end
-
-        -- Проверка нашего персонажа
-        myChar = LocalPlayer.Character
-        myHRP = myChar and (myChar:FindFirstChild("HumanoidRootPart") or myChar:FindFirstChild("Torso") or myChar.PrimaryPart)
-        myHum = myChar and myChar:FindFirstChildOfClass("Humanoid")
-        if not myChar or not myHRP or not myHum or myHum.Health <= 0 then break end
-
-        -- Поддерживаем зависание в воздухе
-        EnableKillFlight(myHRP)
-
-        -- Проверка персонажа цели
-        if not targetPlayer.Parent or not targetChar.Parent then break end
-        targetHum = targetChar:FindFirstChildOfClass("Humanoid")
-        targetHRP = targetChar:FindFirstChild("HumanoidRootPart") or targetChar:FindFirstChild("Torso") or targetChar.PrimaryPart
-        if not targetHum or targetHum.Health <= 0 or not targetHRP then break end
-
-        -- Если в UI уже назначили другого игрока — немедленно переключаемся!
-        local currentT = GetCurrentTarget()
-        if currentT and currentT ~= targetPlayer then break end
-
-        -- Держим позицию строго за спиной цели
+    if firetouchinterest then
         pcall(function()
-            local behindCF = targetHRP.CFrame * CFrame.new(0, 0, 1.3)
-            myHRP.CFrame = behindCF
-            myHRP.AssemblyLinearVelocity = Vector3.zero
+            firetouchinterest(targetHRP, handle, 0)
+            firetouchinterest(targetHRP, handle, 1)
+            firetouchinterest(targetHRP, handle, 0)
+            firetouchinterest(targetHRP, handle, 1)
         end)
+        return true
+    end
+    return false
+end
 
-        -- Повторный взмах только по завершению предыдущего удара (>0.45с)
-        if tick() - lastSwingTime >= 0.45 then
-            lastSwingTime = tick()
-            tool = myChar:FindFirstChildOfClass("Tool")
-            if not tool then tool = EquipKnife() end
-            EmulateAttackClick(tool)
+-- === ПОДСЧЕТ ЖИВЫХ ИГРОКОВ В РАУНДЕ (ДЛЯ СОЛО РЕЖИМА) ===
+local function CountAliveRoundPlayers(): number
+    local count = 0
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr:GetAttribute("Alive") == true then
+            local char = plr.Character
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if hum and hum.Health > 0 then
+                count = count + 1
+            elseif not hum and char then
+                count = count + 1
+            end
+        end
+    end
+    return count
+end
+
+-- === ПРОВЕРКА НА ИСКЛЮЧЕНИЕ (ТВИНК) ===
+local function IsExceptionTarget(targetName: string, targetPlayer: Player?): boolean
+    if SETTINGS.TwinException == "" then return false end
+    local lowerExp = string.lower(SETTINGS.TwinException)
+
+    if string.lower(targetName) == lowerExp then return true end
+
+    if targetPlayer then
+        if string.lower(targetPlayer.Name) == lowerExp then return true end
+        if string.lower(targetPlayer.DisplayName) == lowerExp then return true end
+    end
+
+    return false
+end
+
+local function FindPlayerByCleanName(cleanName: string): Player?
+    if cleanName == "" or cleanName == "Label" or cleanName == "None" then return nil end
+
+    local direct = Players:FindFirstChild(cleanName)
+    if direct then return direct end
+
+    local lower = string.lower(cleanName)
+    for _, pl in ipairs(Players:GetPlayers()) do
+        if pl ~= LocalPlayer then
+            if string.lower(pl.Name) == lower or string.lower(pl.DisplayName) == lower then
+                return pl
+            end
+        end
+    end
+    return nil
+end
+
+-- === ПРЕДВАРИТЕЛЬНАЯ ЗАЧИСТКА В НАЧАЛЕ РАУНДА ===
+local function PreRoundKillChain()
+    isKillRunning = true
+    UpdateStatus("Зачистка: старт фазы боя", Color3.fromRGB(255, 90, 90))
+
+    local knife = GetEquippedOrBackpackKnife()
+    if not knife then
+        isKillRunning = false
+        return
+    end
+
+    local stopRequested = false
+    local roundEndRemote = FindRemoteEvent("RoundEndFade")
+    local changeTargetRemote = FindRemoteEvent("ChangeTarget")
+
+    local endConn: RBXScriptConnection? = nil
+    if roundEndRemote then
+        endConn = roundEndRemote.OnClientEvent:Connect(function()
+            stopRequested = true
+        end)
+    end
+
+    local function CheckAndAttack(targetName: string, targetUserId: number?)
+        if stopRequested or not isKillRunning or IsTerminated then return end
+
+        local targetPlr: Player? = nil
+        if targetUserId and targetUserId > 0 then
+            targetPlr = Players:GetPlayerByUserId(targetUserId)
+        end
+        if not targetPlr and targetName ~= "" then
+            targetPlr = FindPlayerByCleanName(targetName)
         end
 
+        -- 1. Режим с Твинком: проверка ника исключения
+        if SETTINGS.TwinMode and IsExceptionTarget(targetName, targetPlr) then
+            stopRequested = true
+            UpdateStatus("Зачистка: упёрся в Твинка -> старт фарма", Color3.fromRGB(100, 255, 120))
+            UnequipKnife()
+            return
+        end
+
+        -- 2. Режим Соло: проверка количества оставшихся игроков (оставляем 1 соперника)
+        if not SETTINGS.TwinMode then
+            local aliveCount = CountAliveRoundPlayers()
+            if aliveCount <= 2 then
+                stopRequested = true
+                UpdateStatus("Зачистка: остался 1 соперник -> старт фарма", Color3.fromRGB(100, 255, 120))
+                UnequipKnife()
+                return
+            end
+        end
+
+        -- 3. Атака цели
+        if targetPlr and targetPlr.Character then
+            knife = GetEquippedOrBackpackKnife() or knife
+            if knife then
+                UpdateStatus("Зачистка: удар по " .. targetPlr.DisplayName, Color3.fromRGB(255, 80, 80))
+                TurboKill(targetPlr, knife)
+            end
+        end
+    end
+
+    local netConn: RBXScriptConnection? = nil
+    if changeTargetRemote then
+        netConn = changeTargetRemote.OnClientEvent:Connect(function(tName: any, _, _, tId: any)
+            local nameStr = typeof(tName) == "string" and tName or ""
+            local idNum = typeof(tId) == "number" and tId or 0
+            CheckAndAttack(nameStr, idNum)
+        end)
+    end
+
+    -- Watchdog цикла зачистки (до 15 секунд или до достижения условия остановки)
+    local startT = tick()
+    while not stopRequested and not IsTerminated and SETTINGS.AutoFarmEnabled and (tick() - startT < 15) do
         task.wait(0.06)
-    end
-end
 
--- === ОСНОВНОЙ ЦИКЛ KILL ALL ===
-local function RunKillAllLoop()
-    if isKillRunning then return end
-    isKillRunning = true
-
-    if ManualKillBtn then
-        ManualKillBtn.Text = "KILL ALL: ON"
-        ManualKillBtn.BackgroundColor3 = Color3.fromRGB(220, 40, 40)
-    end
-    UpdateStatus("Kill All: Запущен", Color3.fromRGB(255, 60, 60))
-
-    local noTargetStreak = 0
-
-    -- Сразу достаём нож в руки
-    EquipKnife()
-    updateBodyPartsCache()
-
-    while not IsTerminated and isKillRunning do
-        local myChar = LocalPlayer.Character
-        local myHum = myChar and myChar:FindFirstChildOfClass("Humanoid")
-        if not myChar or not myHum or myHum.Health <= 0 then
-            -- Персонаж погиб
-            UpdateStatus("Kill All: Персонаж погиб", Color3.fromRGB(255, 100, 100))
+        if not rt:CheckIfPlayerWasInARound() or not rt:Map() then
             break
         end
 
-        -- Постоянно проверяем нож в руке
-        EquipKnife()
+        -- Проверка количества выживших в соло режиме
+        if not SETTINGS.TwinMode and CountAliveRoundPlayers() <= 2 then
+            stopRequested = true
+            UpdateStatus("Зачистка: остался 1 соперник -> старт фарма", Color3.fromRGB(100, 255, 120))
+            UnequipKnife()
+            break
+        end
 
-        -- Ищем цель
-        local target, debugMsg = GetCurrentTarget()
+        -- Резервная проверка UI
+        local label = GetTargetNameLabel()
+        if label and label.Visible and label.Parent and (label.Parent :: any).Visible then
+            local raw = label.Text
+            local clean = string.gsub(raw, "[%[%]\"'@]", "")
+            clean = string.gsub(clean, "^%s*(.-)%s*$", "%1")
 
-        if target then
-            noTargetStreak = 0
-            KillTarget(target)
-            task.wait(0.05) -- Минимальная пауза для смены текста сервером
-        else
-            noTargetStreak = noTargetStreak + 1
-            local msg = debugMsg or "Ожидание цели"
-            UpdateStatus("Kill All: " .. msg .. " (" .. noTargetStreak .. "/12)", Color3.fromRGB(255, 180, 50))
-
-            -- Ожидание до 0.5с с реакцией на смену текста
-            local label = GetTargetNameLabel()
-            local textChanged = false
-            local conn: RBXScriptConnection? = nil
-            if label then
-                conn = label:GetPropertyChangedSignal("Text"):Connect(function()
-                    textChanged = true
-                end)
-            end
-
-            local waitStart = tick()
-            while tick() - waitStart < 0.5 and not textChanged and isKillRunning do
-                task.wait(0.05)
-            end
-
-            if conn then conn:Disconnect() end
-
-            -- Если цели нет 6 секунд (12 проверок по 0.5 сек) — таргеты кончились или раунд завершен
-            if noTargetStreak >= 12 then
-                UpdateStatus("Kill All: Таргеты кончились", Color3.fromRGB(100, 255, 100))
-                break
+            if clean ~= "" and clean ~= "Label" and clean ~= "None" then
+                if SETTINGS.TwinMode and IsExceptionTarget(clean, nil) then
+                    stopRequested = true
+                    UpdateStatus("Зачистка: в UI ник Твинка -> старт фарма", Color3.fromRGB(100, 255, 120))
+                    UnequipKnife()
+                    break
+                else
+                    local plr = FindPlayerByCleanName(clean)
+                    if plr and plr.Character then
+                        local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+                        if hum and hum.Health > 0 then
+                            knife = GetEquippedOrBackpackKnife() or knife
+                            if knife then TurboKill(plr, knife) end
+                        end
+                    end
+                end
             end
         end
     end
 
-    StopKillAll()
-    UpdateStatus("Kill All: Завершен", Color3.fromRGB(200, 200, 100))
+    if netConn then netConn:Disconnect() end
+    if endConn then endConn:Disconnect() end
+
+    UnequipKnife()
+    isKillRunning = false
+    task.wait(0.1)
+end
+
+-- === ДОБИВАНИЕ ОСТАВШЕЙСЯ ЦЕЛИ ПРИ ПОЛНОЙ СУМКЕ (РЕЖИМ KILL ALL) ===
+local function FinishKillRemainingTargets()
+    isKillRunning = true
+    UpdateStatus("Сумка полна: добивание для победы...", Color3.fromRGB(255, 60, 60))
+    local knife = GetEquippedOrBackpackKnife()
+    if not knife then return end
+
+    local finishStart = tick()
+    while not IsTerminated and (tick() - finishStart < 8) and rt:CheckIfPlayerWasInARound() and rt:Map() do
+        knife = GetEquippedOrBackpackKnife() or knife
+        local label = GetTargetNameLabel()
+        local raw = label and label.Text or ""
+        local clean = string.gsub(raw, "[%[%]\"'@]", "")
+        clean = string.gsub(clean, "^%s*(.-)%s*$", "%1")
+
+        local targetPlr = FindPlayerByCleanName(clean)
+        if targetPlr and targetPlr.Character then
+            if knife then TurboKill(targetPlr, knife) end
+        end
+        task.wait(0.08)
+    end
+    UnequipKnife()
+    isKillRunning = false
 end
 
 -- === ИНТЕРФЕЙС GUI ===
@@ -744,7 +782,7 @@ ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
 
 local MainFrame = Instance.new("Frame", ScreenGui)
 MainFrame.Name = "MainFrame"
-MainFrame.Size = UDim2.new(0, 320, 0, 340)
+MainFrame.Size = UDim2.new(0, 320, 0, 385)
 MainFrame.Position = UDim2.new(0.5, -160, 0.4, -150)
 MainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
 MainFrame.BorderSizePixel = 0
@@ -874,7 +912,7 @@ StatsText.TextXAlignment = Enum.TextXAlignment.Left
 StatsText.TextYAlignment = Enum.TextYAlignment.Top
 
 local SettingsContainer = Instance.new("Frame", MainFrame)
-SettingsContainer.Size = UDim2.new(1, -16, 0, 215)
+SettingsContainer.Size = UDim2.new(1, -16, 0, 260)
 SettingsContainer.Position = UDim2.new(0, 8, 0, 85)
 SettingsContainer.BackgroundTransparency = 1
 
@@ -976,17 +1014,49 @@ BagModeBtn.Active = true
 BagModeBtn.ZIndex = 10
 Instance.new("UICorner", BagModeBtn).CornerRadius = UDim.new(0, 6)
 
--- === ОТДЕЛЬНАЯ КНОПКА KILL ALL (ПРОВЕРКА / РУЧНОЙ РЕЖИМ) ===
-ManualKillBtn = Instance.new("TextButton", SettingsContainer)
-ManualKillBtn.Size = UDim2.new(1, 0, 0, 35)
-ManualKillBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
-ManualKillBtn.Text = "KILL ALL: OFF"
-ManualKillBtn.TextColor3 = Color3.new(1, 1, 1)
-ManualKillBtn.Font = Enum.Font.GothamBold
-ManualKillBtn.TextSize = 13
-ManualKillBtn.Active = true
-ManualKillBtn.ZIndex = 10
-Instance.new("UICorner", ManualKillBtn).CornerRadius = UDim.new(0, 6)
+-- === КНОПКА ПЕРЕКЛЮЧЕНИЯ РЕЖИМА: С ТВИНКОМ / СОЛО ===
+local TwinModeBtn = Instance.new("TextButton", SettingsContainer)
+TwinModeBtn.Size = UDim2.new(1, 0, 0, 35)
+TwinModeBtn.BackgroundColor3 = SETTINGS.TwinMode and Color3.fromRGB(45, 120, 85) or Color3.fromRGB(60, 60, 70)
+TwinModeBtn.Text = "РЕЖИМ: " .. (SETTINGS.TwinMode and "С ТВИНКОМ" or "СОЛО")
+TwinModeBtn.TextColor3 = Color3.new(1, 1, 1)
+TwinModeBtn.Font = Enum.Font.GothamSemibold
+TwinModeBtn.TextSize = 13
+TwinModeBtn.Active = true
+TwinModeBtn.ZIndex = 10
+Instance.new("UICorner", TwinModeBtn).CornerRadius = UDim.new(0, 6)
+
+-- Строка ввода ника Твинка
+local TwinBoxRow = Instance.new("Frame", SettingsContainer)
+TwinBoxRow.Size = UDim2.new(1, 0, 0, 32)
+TwinBoxRow.BackgroundTransparency = 1
+TwinBoxRow.Visible = SETTINGS.TwinMode
+
+local TwinTextBox = Instance.new("TextBox", TwinBoxRow)
+TwinTextBox.Size = UDim2.new(0.72, -4, 1, 0)
+TwinTextBox.Position = UDim2.new(0, 0, 0, 0)
+TwinTextBox.BackgroundColor3 = Color3.fromRGB(35, 38, 48)
+TwinTextBox.PlaceholderText = "Ник Твинка..."
+TwinTextBox.Text = SETTINGS.TwinException
+TwinTextBox.TextColor3 = Color3.new(1, 1, 1)
+TwinTextBox.PlaceholderColor3 = Color3.fromRGB(130, 140, 160)
+TwinTextBox.Font = Enum.Font.Gotham
+TwinTextBox.TextSize = 11
+TwinTextBox.Active = true
+TwinTextBox.ZIndex = 10
+Instance.new("UICorner", TwinTextBox).CornerRadius = UDim.new(0, 6)
+
+local TwinSaveBtn = Instance.new("TextButton", TwinBoxRow)
+TwinSaveBtn.Size = UDim2.new(0.28, 0, 1, 0)
+TwinSaveBtn.Position = UDim2.new(0.72, 4, 0, 0)
+TwinSaveBtn.BackgroundColor3 = Color3.fromRGB(45, 120, 85)
+TwinSaveBtn.Text = "💾 СОХР"
+TwinSaveBtn.TextColor3 = Color3.new(1, 1, 1)
+TwinSaveBtn.Font = Enum.Font.GothamBold
+TwinSaveBtn.TextSize = 11
+TwinSaveBtn.Active = true
+TwinSaveBtn.ZIndex = 10
+Instance.new("UICorner", TwinSaveBtn).CornerRadius = UDim.new(0, 6)
 
 local StatusFrame = Instance.new("Frame", MainFrame)
 StatusFrame.Size = UDim2.new(1, 0, 0, 25)
@@ -1015,10 +1085,10 @@ BindClick(BtnStats, function()
     BtnStats.BackgroundColor3 = StatsPanel.Visible and Color3.fromRGB(45, 125, 245) or Color3.fromRGB(60, 60, 70)
     if StatsPanel.Visible then
         SettingsContainer.Position = UDim2.new(0, 8, 0, 155)
-        MainFrame.Size = UDim2.new(0, 320, 0, 410)
+        MainFrame.Size = UDim2.new(0, 320, 0, 455)
     else
         SettingsContainer.Position = UDim2.new(0, 8, 0, 85)
-        MainFrame.Size = UDim2.new(0, 320, 0, 340)
+        MainFrame.Size = UDim2.new(0, 320, 0, 385)
     end
 end)
 
@@ -1203,15 +1273,29 @@ BindClick(BagModeBtn, function()
     end
 end)
 
-BindClick(ManualKillBtn, function()
-    if isKillRunning then
-        StopKillAll()
-        UpdateStatus("Kill All: Выключен вручную", Color3.fromRGB(200, 150, 50))
-    else
-        task.spawn(function()
-            RunKillAllLoop()
-        end)
-    end
+BindClick(TwinModeBtn, function()
+    SETTINGS.TwinMode = not SETTINGS.TwinMode
+    TwinModeBtn.Text = "РЕЖИМ: " .. (SETTINGS.TwinMode and "С ТВИНКОМ" or "СОЛО")
+    TwinModeBtn.BackgroundColor3 = SETTINGS.TwinMode and Color3.fromRGB(45, 120, 85) or Color3.fromRGB(60, 60, 70)
+    TwinBoxRow.Visible = SETTINGS.TwinMode
+    local baseH = SETTINGS.TwinMode and 385 or 350
+    local expandedH = SETTINGS.TwinMode and 455 or 420
+    MainFrame.Size = UDim2.new(0, 320, 0, StatsPanel.Visible and expandedH or baseH)
+    UpdateStatus("Режим: " .. (SETTINGS.TwinMode and "С Твинком" or "Соло (оставить 1)"), Color3.fromRGB(200, 200, 200))
+end)
+
+BindClick(TwinSaveBtn, function()
+    local text = string.gsub(TwinTextBox.Text, "^%s*(.-)%s*$", "%1")
+    SETTINGS.TwinException = text
+    pcall(function()
+        local wf = writefile
+        if wf then wf(FARM_CFG, text) end
+    end)
+    TwinSaveBtn.Text = "✓ OK"
+    TwinSaveBtn.BackgroundColor3 = Color3.fromRGB(50, 180, 80)
+    task.wait(1)
+    TwinSaveBtn.Text = "💾 СОХР"
+    TwinSaveBtn.BackgroundColor3 = Color3.fromRGB(45, 120, 85)
 end)
 
 -- === ПРОВЕРКА УДАЛЕНИЯ МОНЕТЫ (PING-SYNC) ===
@@ -1390,21 +1474,37 @@ local function CollectCoins()
 end
 
 local function ActionState()
+    -- 1. Перед началом сбора монет ждем завершения разминки (появление ножа)
+    UpdateStatus("Ожидание завершения разминки...", Color3.fromRGB(255, 200, 50))
+    local knifeReady = false
+    local knifeWaitStart = tick()
+    while not IsTerminated and SETTINGS.AutoFarmEnabled and tick() - knifeWaitStart < 15 do
+        local knife = GetEquippedOrBackpackKnife()
+        if knife then
+            knifeReady = true
+            break
+        end
+        task.wait(0.2)
+    end
+
+    -- 2. Предварительная зачистка сервера в начале раунда
+    if knifeReady and SETTINGS.AutoFarmEnabled and not IsTerminated and rt:CheckIfPlayerWasInARound() then
+        PreRoundKillChain()
+    end
+
+    -- 3. Основной сбор монет на пустой карте
     CollectCoins()
 
     if not SETTINGS.AutoFarmEnabled or IsTerminated then return end
 
     if BagIsFull then
         if SETTINGS.BagFullMode == "KillAll" then
-            -- Режим Kill All: убиваем всех по таргету
-            RunKillAllLoop()
-            while isKillRunning and not IsTerminated do
-                task.wait(0.5)
-            end
+            -- Режим Kill All: добиваем оставшуюся цель для победы
+            FinishKillRemainingTargets()
             BagIsFull = false  -- Сброс: следующий раунд начнёт фарм с чистого состояния
             ChangeState(State.WaitingForRoundEnd)
         else
-            -- Режим Reset: ресет персонажа (текущее поведение)
+            -- Режим Reset: ресет персонажа (победа уходит твинку или второму игроку)
             ChangeState(State.WaitingForRoundEnd)
             local char = rt:Character()
             if char then
@@ -1557,7 +1657,8 @@ task.spawn(function()
             if not ok then
                 warn("[MM2 AIO] Farm loop error: " .. tostring(err))
                 -- Восстанавливаем состояние после ошибки
-                StopKillAll()
+                isKillRunning = false
+                UnequipKnife()
                 BagIsFull = false
                 Working = false
                 CurrentState = State.WaitingForRound
@@ -1634,7 +1735,8 @@ local function TerminateScript()
     SETTINGS.AutoFarmEnabled = false
     SETTINGS.AutoVoteEnabled = false
     Working = false
-    StopKillAll()
+    isKillRunning = false
+    UnequipKnife()
     
     -- 2. Отключаем все активные RBXScriptConnection
     for _, conn in ipairs(ActiveConnections) do
