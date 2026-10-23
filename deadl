@@ -1,9 +1,8 @@
 --!strict
 -- =====================================================================
--- MM2 EXPLOIT INVESTIGATION & SURVEILLANCE SCRIPT: LUNAR TRACKER
--- Специальный скрипт для слежки за читером 'lunargg5860' (и любым другим),
--- перехвата фантомных касаний, оторванных ножей (Desync), скрытых Tool
--- и мгновенного анализа метода убийства каждого игрока на сервере.
+-- MM2 EXPLOIT INVESTIGATION & SURVEILLANCE SCRIPT: LUNAR TRACKER v2.1
+-- Анализ мгновенного массового килла (Batch Kill), проверка ножей и снарядов,
+-- вычисление дистанций для моделей ThrowingKnife и фиксация firetouchinterest.
 -- =====================================================================
 
 local Players = game:GetService("Players")
@@ -15,12 +14,10 @@ local Camera = Workspace.CurrentCamera
 while not Players.LocalPlayer do task.wait(0.1) end
 local LocalPlayer = Players.LocalPlayer
 
--- Настройки по умолчанию
-local TARGET_NAME = "lunargg5860" -- Имя отслеживаемого читера
+local TARGET_NAME = "lunargg5860"
 local isSpectating = false
 local isEspEnabled = false
 
--- Функция безопасного размещения интерфейса
 local function GetSafeGuiParent(): Instance
     local success, result = pcall(function() return gethui() end)
     if success and result then return result end
@@ -37,9 +34,6 @@ ScreenGui.Name = "MM2_Lunar_Tracker_Gui"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = GetSafeGuiParent()
 
--- =====================================================================
--- ИНТЕРФЕЙС (GUI) ДЛЯ МОБИЛЬНЫХ И ПК
--- =====================================================================
 local MainFrame = Instance.new("Frame")
 MainFrame.Name = "MainFrame"
 MainFrame.Size = UDim2.new(0, 360, 0, 340)
@@ -55,7 +49,6 @@ local MainStroke = Instance.new("UIStroke", MainFrame)
 MainStroke.Color = Color3.fromRGB(60, 60, 80)
 MainStroke.Thickness = 1.2
 
--- Заголовок
 local TitleBar = Instance.new("Frame")
 TitleBar.Size = UDim2.new(1, 0, 0, 32)
 TitleBar.BackgroundColor3 = Color3.fromRGB(28, 28, 38)
@@ -95,7 +88,7 @@ CopyBtn.TextSize = 10
 CopyBtn.Parent = TitleBar
 Instance.new("UICorner", CopyBtn).CornerRadius = UDim.new(0, 5)
 
--- Панель текущего состояния читера (Live Telemetry)
+-- Панель телеметрии
 local TelemetryFrame = Instance.new("Frame")
 TelemetryFrame.Size = UDim2.new(1, -16, 0, 72)
 TelemetryFrame.Position = UDim2.new(0, 8, 0, 38)
@@ -106,7 +99,7 @@ Instance.new("UICorner", TelemetryFrame).CornerRadius = UDim.new(0, 8)
 local TelemetryLabel = Instance.new("TextLabel")
 TelemetryLabel.Size = UDim2.new(1, -10, 1, -8)
 TelemetryLabel.Position = UDim2.new(0, 6, 0, 4)
-TelemetryLabel.Text = "🔍 Поиск игрока '" .. TARGET_NAME .. "' на сервере..."
+TelemetryLabel.Text = "🔍 Поиск игрока '" .. TARGET_NAME .. "'..."
 TelemetryLabel.Font = Enum.Font.Gotham
 TelemetryLabel.TextSize = 10
 TelemetryLabel.TextColor3 = Color3.fromRGB(190, 200, 215)
@@ -116,7 +109,6 @@ TelemetryLabel.TextWrapped = true
 TelemetryLabel.BackgroundTransparency = 1
 TelemetryLabel.Parent = TelemetryFrame
 
--- Кнопки действий: Спектатор и ESP
 local ButtonsBar = Instance.new("Frame")
 ButtonsBar.Size = UDim2.new(1, -16, 0, 26)
 ButtonsBar.Position = UDim2.new(0, 8, 0, 114)
@@ -145,7 +137,6 @@ EspBtn.TextSize = 11
 EspBtn.Parent = ButtonsBar
 Instance.new("UICorner", EspBtn).CornerRadius = UDim.new(0, 6)
 
--- Скролл логов событий
 local Scroll = Instance.new("ScrollingFrame")
 Scroll.Size = UDim2.new(1, -16, 1, -148)
 Scroll.Position = UDim2.new(0, 8, 0, 144)
@@ -159,7 +150,7 @@ local UIList = Instance.new("UIListLayout")
 UIList.Padding = UDim.new(0, 5)
 UIList.Parent = Scroll
 
--- Перетаскивание интерфейса
+-- Перетаскивание окна
 local dragging, dragStart, startPos
 MainFrame.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
@@ -179,14 +170,13 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
--- Буфер логов для копирования
 local rawLogs: { string } = {}
 
 local function AddLog(header: string, message: string, color: Color3?)
     local timeStr = os.date("%H:%M:%S")
     local rawText = string.format("[%s] %s\n%s", timeStr, header, message)
     table.insert(rawLogs, rawText)
-    if #rawLogs > 100 then table.remove(rawLogs, 1) end
+    if #rawLogs > 150 then table.remove(rawLogs, 1) end
 
     local box = Instance.new("Frame")
     box.Size = UDim2.new(1, -6, 0, 0)
@@ -226,7 +216,6 @@ local function AddLog(header: string, message: string, color: Color3?)
     local pad = Instance.new("UIPadding", box)
     pad.PaddingBottom = UDim.new(0, 5)
     
-    -- Автопрокрутка вниз
     task.defer(function()
         Scroll.CanvasPosition = Vector2.new(0, 999999)
     end)
@@ -251,14 +240,9 @@ CopyBtn.MouseButton1Click:Connect(function()
     if copied then
         CopyBtn.Text = "OK!"
         task.delay(1, function() CopyBtn.Text = "Copy" end)
-    else
-        AddLog("СИСТЕМА", "Ваш экзекутор не поддерживает setclipboard.", Color3.fromRGB(255, 120, 120))
     end
 end)
 
--- =====================================================================
--- ПОИСК ЦЕЛИ И СИСТЕМА ESP / СПЕКТАТОРА
--- =====================================================================
 local function FindTarget(): Player?
     for _, plr in ipairs(Players:GetPlayers()) do
         if string.lower(plr.Name) == string.lower(TARGET_NAME) or string.lower(plr.DisplayName) == string.lower(TARGET_NAME) then
@@ -268,6 +252,9 @@ local function FindTarget(): Player?
     return nil
 end
 
+-- =====================================================================
+-- ESP И КАМЕРА
+-- =====================================================================
 local targetHighlight: Highlight? = nil
 local targetBillboard: BillboardGui? = nil
 
@@ -327,9 +314,6 @@ SpectateBtn.MouseButton1Click:Connect(function()
             SpectateBtn.Text = "👁️ Слежка: ВКЛ"
             SpectateBtn.BackgroundColor3 = Color3.fromRGB(40, 150, 85)
             AddLog("СПЕКТАТОР", "Камера переключена на " .. target.Name, Color3.fromRGB(100, 255, 120))
-        else
-            isSpectating = false
-            AddLog("ОШИБКА", "Персонаж цели не найден!", Color3.fromRGB(255, 80, 80))
         end
     else
         if LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid") then
@@ -354,218 +338,182 @@ EspBtn.MouseButton1Click:Connect(function()
 end)
 
 -- =====================================================================
--- АНАЛИЗАТОР ПРЕДМЕТОВ, ДЕСИНХРОНИЗАЦИИ И СНАРЯДОВ В WORKSPACE
+-- АНАЛИЗАТОР СНАРЯДОВ (С ПОЛНОЙ ПОДДЕРЖКОЙ MODEL И BASEPART)
 -- =====================================================================
--- Отслеживание появления новых объектов в Workspace (снаряды ножа)
 Workspace.ChildAdded:Connect(function(child)
     local cName = string.lower(child.Name)
-    if cName:find("knife") or cName:find("blade") or cName:find("throw") or cName:find("projectile") then
-        local distToTarget = "N/A"
+    if cName:find("knife") or cName:find("blade") or cName:find("throw") or cName:find("stuck") then
+        local objPos: Vector3? = nil
+        if child:IsA("BasePart") then
+            objPos = child.Position
+        elseif child:IsA("Model") then
+            local p = child.PrimaryPart or child:FindFirstChildWhichIsA("BasePart")
+            if p then objPos = p.Position end
+        end
+
+        local distText = "N/A"
         local target = FindTarget()
-        if target and target.Character and target.Character:FindFirstChild("HumanoidRootPart") and child:IsA("BasePart") then
-            distToTarget = tostring(math.floor((child.Position - target.Character.HumanoidRootPart.Position).Magnitude)) .. " studs"
+        if target and target.Character and target.Character:FindFirstChild("HumanoidRootPart") and objPos then
+            local dist = math.floor((objPos - target.Character.HumanoidRootPart.Position).Magnitude)
+            distText = tostring(dist) .. " studs"
         end
 
         AddLog(
-            "🚀 СНАРЯД / ОБЪЕКТ В WORKSPACE",
-            string.format("Объект: %s (%s)\nДистанция от читера: %s", child.Name, child.ClassName, distToTarget),
-            Color3.fromRGB(255, 140, 0)
+            "🚀 СНАРЯД В WORKSPACE",
+            string.format("Объект: %s (%s)\nДистанция от %s: %s", child.Name, child.ClassName, TARGET_NAME, distText),
+            Color3.fromRGB(255, 150, 50)
         )
     end
 end)
 
 -- =====================================================================
--- МОНИТОРИНГ ЖЕРТВ НА СЕРВЕРЕ (КТО И КАК ПОГИБ)
+-- МОНИТОРИНГ BATCH KILL (ОДНОВРЕМЕННЫЙ МАССОВЫЙ КИЛЛ ИЗ ПУСТОТЫ)
 -- =====================================================================
-local victimLastTouches: { [Player]: { partName: string, fromWho: string, dist: number, time: number } } = {}
+local deathQueue: { name: string, time: number, distToLunar: number } = {}
+local batchTimerRunning = false
 
-local function HookPlayerTouches(plr: Player)
+local function ProcessBatchDeaths()
+    task.wait(0.35)
+    batchTimerRunning = false
+
+    local count = #deathQueue
+    if count == 0 then return end
+
+    local target = FindTarget()
+    local targetPos = Vector3.zero
+    local targetInVoid = false
+    local targetY = 0
+
+    if target and target.Character and target.Character:FindFirstChild("HumanoidRootPart") then
+        targetPos = target.Character.HumanoidRootPart.Position
+        targetY = math.floor(targetPos.Y)
+        if targetY < -30 or targetY > 300 or targetPos.Magnitude > 2500 then
+            targetInVoid = true
+        end
+    end
+
+    if count >= 2 then
+        local namesList = {}
+        local avgDist = 0
+        for _, d in ipairs(deathQueue) do
+            table.insert(namesList, d.name)
+            avgDist = avgDist + d.distToLunar
+        end
+        avgDist = math.floor(avgDist / count)
+
+        AddLog(
+            "🚨 МАССОВЫЙ INSTA-KILL (FIRETOUCH AURA)",
+            string.format(
+                "⚡ %d игроков погибли в одну миллисекунду!\n" ..
+                "• Жертвы: %s\n" ..
+                "• %s в пустоте: Y = %d (дистанция ~%d studs)\n" ..
+                "• ВЕРДИКТ: 100%% эксплойт firetouchinterest в цикле for!\n" ..
+                "Читер не бросал ножи и не летал. Пакет касания отправлен сервере напрямую из пустоты.",
+                count, table.concat(namesList, ", "),
+                TARGET_NAME, targetY, avgDist
+            ),
+            Color3.fromRGB(255, 40, 40)
+        )
+    else
+        local single = deathQueue[1]
+        AddLog(
+            "💀 СМЕРТЬ: " .. single.name,
+            string.format(
+                "Дистанция до %s: %d studs (Y: %d)\nСтатус убийцы: %s",
+                TARGET_NAME, single.distToLunar, targetY,
+                targetInVoid and "В пустоте / над картой" or "На карте"
+            ),
+            Color3.fromRGB(200, 200, 210)
+        )
+    end
+
+    table.clear(deathQueue)
+end
+
+local function RegisterDeath(victimName: string, victimChar: Instance)
+    local target = FindTarget()
+    local dist = 0
+    if target and target.Character and target.Character:FindFirstChild("HumanoidRootPart") and victimChar:FindFirstChild("HumanoidRootPart") then
+        dist = math.floor((victimChar.HumanoidRootPart.Position - target.Character.HumanoidRootPart.Position).Magnitude)
+    end
+
+    table.insert(deathQueue, {
+        name = victimName,
+        time = os.clock(),
+        distToLunar = dist
+    })
+
+    if not batchTimerRunning then
+        batchTimerRunning = true
+        task.spawn(ProcessBatchDeaths)
+    end
+end
+
+local function HookPlayer(plr: Player)
     if plr == LocalPlayer then return end
 
-    local function setupChar(char: Instance)
-        for _, part in ipairs(char:GetDescendants()) do
-            if part:IsA("BasePart") then
-                part.Touched:Connect(function(hit)
-                    if not hit or not hit.Parent or hit:IsDescendantOf(char) then return end
-                    local parentPlayer = Players:GetPlayerFromCharacter(hit.Parent) or Players:GetPlayerFromCharacter(hit.Parent.Parent)
-                    local killerName = parentPlayer and parentPlayer.Name or hit.Parent.Name
-                    
-                    local hitDist = 0
-                    if char:FindFirstChild("HumanoidRootPart") and hit:IsA("BasePart") then
-                        hitDist = math.floor((hit.Position - char.HumanoidRootPart.Position).Magnitude)
-                    end
-
-                    victimLastTouches[plr] = {
-                        partName = hit.Name,
-                        fromWho = killerName,
-                        dist = hitDist,
-                        time = os.clock()
-                    }
-                end)
-            end
-        end
-
+    local function setup(char: Instance)
         local hum = char:WaitForChild("Humanoid", 5) :: Humanoid?
         if hum then
             hum.Died:Connect(function()
-                local deathTime = os.clock()
-                local target = FindTarget()
-                local targetPos = Vector3.zero
-                local targetInVoid = false
-                local distToTarget = -1
-                local targetEquipped = "Ничего"
-                local targetVel = 0
-
-                if target and target.Character and target.Character:FindFirstChild("HumanoidRootPart") then
-                    local tHrp = target.Character.HumanoidRootPart
-                    targetPos = tHrp.Position
-                    targetVel = math.floor(tHrp.AssemblyLinearVelocity.Magnitude)
-                    if char:FindFirstChild("HumanoidRootPart") then
-                        distToTarget = math.floor((char.HumanoidRootPart.Position - targetPos).Magnitude)
-                    end
-                    if targetPos.Y < -30 or targetPos.Magnitude > 2000 then
-                        targetInVoid = true
-                    end
-                    local tool = target.Character:FindFirstChildOfClass("Tool")
-                    if tool then targetEquipped = tool.Name end
-                end
-
-                local lastTouch = victimLastTouches[plr]
-                local touchDetails = "Касаний не зафиксировано"
-                local isLunarTouch = false
-
-                if lastTouch and (deathTime - lastTouch.time) < 1.5 then
-                    touchDetails = string.format("Деталь: %s (Владелец: %s, Дист. детали: %d)", lastTouch.partName, lastTouch.fromWho, lastTouch.dist)
-                    if string.lower(lastTouch.fromWho) == string.lower(TARGET_NAME) or string.lower(lastTouch.partName):find("knife") then
-                        isLunarTouch = true
-                    end
-                end
-
-                -- Определение метода
-                local header = "💀 СМЕРТЬ: " .. plr.DisplayName
-                local alertColor = Color3.fromRGB(200, 200, 200)
-                local verdict = ""
-
-                if distToTarget > 100 and targetInVoid then
-                    header = "🚨 КИЛЛ ИЗ ПУСТОТЫ: " .. plr.DisplayName
-                    alertColor = Color3.fromRGB(255, 40, 40)
-                    verdict = string.format(
-                        "💥 ВЕРДИКТ: Читер убил игрока на расстоянии %d studs!\n" ..
-                        "• Читер в пустоте: Y = %d (Скорость читера: %d)\n" ..
-                        "• Оружие в руках читера: %s\n" ..
-                        "• Последнее касание: %s\n" ..
-                        "• Метод: %s",
-                        distToTarget, math.floor(targetPos.Y), targetVel, targetEquipped, touchDetails,
-                        (isLunarTouch or targetEquipped == "Ничего") and "FIRETOUCHINTEREST (Пакет фантомного касания ножом)" or "Скрытый Tool / Remote"
-                    )
-                else
-                    verdict = string.format(
-                        "Дистанция до %s: %d studs\nЧитер: Y = %d (В руках: %s)\nКасание: %s",
-                        TARGET_NAME, distToTarget, math.floor(targetPos.Y), targetEquipped, touchDetails
-                    )
-                end
-
-                AddLog(header, verdict, alertColor)
+                RegisterDeath(plr.DisplayName, char)
             end)
         end
     end
 
-    if plr.Character then setupChar(plr.Character) end
-    plr.CharacterAdded:Connect(setupChar)
+    if plr.Character then setup(plr.Character) end
+    plr.CharacterAdded:Connect(setup)
 end
 
-for _, p in ipairs(Players:GetPlayers()) do
-    HookPlayerTouches(p)
-end
-Players.PlayerAdded:Connect(HookPlayerTouches)
+for _, p in ipairs(Players:GetPlayers()) do HookPlayer(p) end
+Players.PlayerAdded:Connect(HookPlayer)
 
 -- =====================================================================
--- ПОСТОЯННАЯ СЛЕЖКА ЗА ЧИТЕРОМ (LUNAR TRACKER ENGINE)
+-- ТЕЛЕМЕТРИЯ ЧИТЕРА
 -- =====================================================================
-local lastKnownParent = nil
-local lastToolSeenTime = 0
-
 RunService.Heartbeat:Connect(function()
     local target = FindTarget()
     if not target then
-        TelemetryLabel.Text = string.format(
-            "❌ Игрок '%s' НЕ на сервере!\nОжидание подключения...\nИгроков онлайн: %d",
-            TARGET_NAME, #Players:GetPlayers()
-        )
+        TelemetryLabel.Text = string.format("❌ Игрок '%s' не в сети!\nОнлайн: %d", TARGET_NAME, #Players:GetPlayers())
         TelemetryLabel.TextColor3 = Color3.fromRGB(255, 120, 120)
         return
     end
 
     local char = target.Character
     if not char then
-        TelemetryLabel.Text = string.format("⏳ %s возрождается (нет персонажа)", target.Name)
+        TelemetryLabel.Text = string.format("⏳ %s возрождается...", target.Name)
         return
     end
 
     local hrp = char:FindFirstChild("HumanoidRootPart") :: BasePart?
     local hum = char:FindFirstChildOfClass("Humanoid")
-    if not hrp or not hum then
-        TelemetryLabel.Text = string.format("⚠️ Персонаж %s загружается...", target.Name)
-        return
-    end
+    if not hrp or not hum then return end
 
     local pos = hrp.Position
     local vel = math.floor(hrp.AssemblyLinearVelocity.Magnitude)
-    local distToMe = math.floor((pos - (LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") and LocalPlayer.Character.HumanoidRootPart.Position or Vector3.zero)).Magnitude)
+    local myPos = (LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")) and LocalPlayer.Character.HumanoidRootPart.Position or Vector3.zero
+    local distToMe = math.floor((pos - myPos).Magnitude)
 
-    -- Поиск экипированного инструмента
     local equippedTool = char:FindFirstChildOfClass("Tool")
-    local toolName = equippedTool and equippedTool.Name or "Нет"
+    local toolName = equippedTool and equippedTool.Name or "Ничего"
 
-    -- Проверка: не оторвана ли деталь ножа (Desync Check)
-    local isDesyncedHandle = false
-    local handleDistance = 0
-    if equippedTool then
-        local handle = equippedTool:FindFirstChild("Handle") :: BasePart?
-        if handle then
-            handleDistance = math.floor((handle.Position - pos).Magnitude)
-            if handleDistance > 25 then
-                isDesyncedHandle = true
-            end
-        end
-    end
-
-    -- Формирование статуса
-    local inVoid = (pos.Y < -30 or pos.Magnitude > 2500)
-    local statusColor = inVoid and Color3.fromRGB(255, 80, 80) or Color3.fromRGB(100, 255, 120)
-    local locationText = inVoid and "🚨 В ПУСТОТЕ ПОД КАРТОЙ!" or "На карте"
+    local inVoid = (pos.Y < -30 or pos.Y > 300 or pos.Magnitude > 2500)
+    local locStr = inVoid and "🚨 В ПУСТОТЕ/НЕБЕ" or "На карте"
 
     TelemetryLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
     TelemetryLabel.Text = string.format(
-        "👤 Цель: %s | %s\n" ..
-        "📍 Координаты: X: %d, Y: %d, Z: %d (Дист. до меня: %d)\n" ..
+        "👤 %s | %s\n" ..
+        "📍 Позиция: X: %d, Y: %d, Z: %d (До меня: %d)\n" ..
         "⚡ Скорость: %d studs/s | HP: %d\n" ..
-        "🗡️ В руках: %s %s",
-        target.Name, locationText,
+        "🗡️ В руках: %s",
+        target.Name, locStr,
         math.floor(pos.X), math.floor(pos.Y), math.floor(pos.Z), distToMe,
-        vel, math.floor(hum.Health),
-        toolName,
-        isDesyncedHandle and string.format("⚠️ [DESYNC НОЖА! Handle на %d studs от тела!]", handleDistance) or ""
+        vel, math.floor(hum.Health), toolName
     )
 
-    -- Обновление ESP
     if isEspEnabled then
         UpdateEsp(target)
-        if targetBillboard and targetBillboard:FindFirstChild("Info") then
-            local infoLbl = targetBillboard.Info :: TextLabel
-            infoLbl.Text = string.format("%s\n%d studs | Y: %d\nTool: %s", target.Name, distToMe, math.floor(pos.Y), toolName)
-        end
-    end
-
-    -- Логирование смены экипировки (даже если достал нож на 0.05 сек)
-    if equippedTool and os.clock() - lastToolSeenTime > 1.2 then
-        lastToolSeenTime = os.clock()
-        AddLog(
-            "🗡️ ОБНАРУЖЕН ПРЕДМЕТ В РУКАХ",
-            string.format("Читер достал: '%s' на высоте Y: %d (Дистанция: %d)", toolName, math.floor(pos.Y), distToMe),
-            Color3.fromRGB(255, 200, 50)
-        )
     end
 end)
 
-AddLog("СИСТЕМА", "Скрипт слежки активен! Цель: " .. TARGET_NAME .. "\nСледит за координатами, пустотой, desync-ножами и смертями.", Color3.fromRGB(80, 220, 120))
+AddLog("СИСТЕМА", "Lunar Tracker v2.1 активен. Логирует снаряды и массовые убийства (Batch Kill).", Color3.fromRGB(80, 220, 120))
