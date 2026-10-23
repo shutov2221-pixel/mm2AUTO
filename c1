@@ -1,80 +1,492 @@
+--!strict
 -- =====================================================================
--- MM2 ASSASSIN ENGINE REVERSE-ENGINEERING SPY
+-- MM2 ASSASSIN ENGINE REVERSE-ENGINEERING SPY [SCAN1]
+-- Инструмент глубокого анализа механики Assassin с графическим интерфейсом
+-- 1. Скан скрытых данных и таблиц в ReplicatedStorage / Workspace
+-- 2. Сниффер сетевых пакетов (RemoteEvents OnClientEvent)
+-- 3. Анализ скриптов, изменяющих TargetName (getconnections & getupvalues)
 -- =====================================================================
+
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+
+while not Players.LocalPlayer do task.wait(0.1) end
 local LocalPlayer = Players.LocalPlayer
 
-print("--- [SPY] СТАРТ ИССЛЕДОВАНИЯ МЕХАНИКИ ASSASSIN ---")
+local isTerminated = false
+local generalConnections: { RBXScriptConnection } = {}
+local remoteConnections: { RBXScriptConnection } = {}
 
--- 1. СКАНИРОВАНИЕ REPLICATEDSTORAGE НА ДАННЫЕ РАУНДА
-print("\n[1] Поиск скрытых таблиц/объектов Assassin в ReplicatedStorage:")
-for _, item in ipairs(ReplicatedStorage:GetDescendants()) do
-    local lowerName = string.lower(item.Name)
-    if string.find(lowerName, "target") or string.find(lowerName, "assassin") or string.find(lowerName, "round") then
-        local valInfo = ""
-        if item:IsA("ValueBase") then
-            valInfo = " [Значение: " .. tostring((item :: any).Value) .. "]"
-        end
-        print(string.format("  -> %s (%s)%s", item:GetFullName(), item.ClassName, valInfo))
-    end
+-- === БЕЗОПАСНЫЙ РОДИТЕЛЬ ДЛЯ GUI ===
+local function GetSafeGuiParent(): Instance
+    local success, result = pcall(function() return gethui() end)
+    if success and result then return result end
+    local coreSuccess, coreResult = pcall(function() return game:GetService("CoreGui") end)
+    if coreSuccess and coreResult then return coreResult end
+    return LocalPlayer:WaitForChild("PlayerGui")
 end
 
--- 2. СНИФФЕР REMOTES (Слушаем все входящие вызовы от сервера)
-print("\n[2] Установка ловушек на RemoteEvents:")
-local remotesFound = 0
-for _, obj in ipairs(ReplicatedStorage:GetDescendants()) do
-    if obj:IsA("RemoteEvent") then
-        local rName = string.lower(obj.Name)
-        if string.find(rName, "game") or string.find(rName, "round") or string.find(rName, "target") or string.find(rName, "role") then
-            remotesFound = remotesFound + 1
-            obj.OnClientEvent:Connect(function(...)
-                local args = {...}
-                print(string.format("⚡ ПАКЕТ ОТ СЕРВЕРА [%s]:", obj.Name))
-                for i, arg in ipairs(args) do
-                    if type(arg) == "table" then
-                        print(string.format("   Arg %d (TABLE):", i))
-                        for k, v in pairs(arg) do
-                            print(string.format("      [%s] = %s", tostring(k), tostring(v)))
-                        end
-                    else
-                        print(string.format("   Arg %d (%s) = %s", i, type(arg), tostring(arg)))
-                    end
-                end
-            end)
-            print("  [+] Ловушка установлена на: " .. obj.Name)
-        end
-    end
-end
+local existing = GetSafeGuiParent():FindFirstChild("MM2_Assassin_Spy_Gui")
+if existing then pcall(function() existing:Destroy() end) end
 
--- 3. ИНСПЕКЦИЯ СКРИПТА, ИЗМЕНЯЮЩЕГО ТАРГЕТ (Upvalues & Script Environment)
-task.spawn(function()
-    local pGui = LocalPlayer:WaitForChild("PlayerGui", 5)
-    local targetLabel = pGui and pGui:FindFirstChild("TargetName", true)
-    if targetLabel then
-        print("\n[3] Анализ соединений TargetName:")
-        local conns = getconnections and getconnections(targetLabel:GetPropertyChangedSignal("Text"))
-        if conns and #conns > 0 then
-            for idx, conn in ipairs(conns) do
-                local func = conn.Function
-                print(string.format("  Соединение #%d, функция: %s", idx, tostring(func)))
-                if getupvalues and func then
-                    local ups = getupvalues(func)
-                    print("  Внутренние переменные функции (Upvalues):")
-                    for uName, uVal in pairs(ups) do
-                        print(string.format("    - %s: %s (%s)", tostring(uName), tostring(uVal), type(uVal)))
-                        if type(uVal) == "table" then
-                            for k, v in pairs(uVal) do
-                                print(string.format("        [%s] = %s", tostring(k), tostring(v)))
-                            end
-                        end
-                    end
-                end
-            end
-        else
-            print("  (getconnections не поддерживается вашим инжектором или скрипт пишет напрямую в цикле)")
-        end
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "MM2_Assassin_Spy_Gui"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = GetSafeGuiParent()
+
+-- === РАЗМЕРЫ ОКНА ===
+local WINDOW_WIDTH = 410
+local EXPANDED_HEIGHT = 450
+local COLLAPSED_HEIGHT = 115
+local isCollapsed = false
+
+local MainFrame = Instance.new("Frame")
+MainFrame.Name = "MainFrame"
+MainFrame.Size = UDim2.new(0, WINDOW_WIDTH, 0, EXPANDED_HEIGHT)
+MainFrame.Position = UDim2.new(0.03, 0, 0.25, 0)
+MainFrame.BackgroundColor3 = Color3.fromRGB(20, 22, 28)
+MainFrame.BorderSizePixel = 0
+MainFrame.ClipsDescendants = true
+MainFrame.Active = true
+MainFrame.Parent = ScreenGui
+Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
+
+local Stroke = Instance.new("UIStroke", MainFrame)
+Stroke.Color = Color3.fromRGB(60, 130, 95)
+Stroke.Thickness = 1.3
+
+-- === ЗАГОЛОВОК ===
+local TitleBar = Instance.new("Frame", MainFrame)
+TitleBar.Name = "TitleBar"
+TitleBar.Size = UDim2.new(1, 0, 0, 34)
+TitleBar.BackgroundColor3 = Color3.fromRGB(30, 85, 60)
+TitleBar.BorderSizePixel = 0
+
+local TitleLabel = Instance.new("TextLabel", TitleBar)
+TitleLabel.Size = UDim2.new(1, -75, 1, 0)
+TitleLabel.Position = UDim2.new(0, 10, 0, 0)
+TitleLabel.BackgroundTransparency = 1
+TitleLabel.Text = "🕵️ ASSASSIN ENGINE SPY [SCAN1]"
+TitleLabel.TextColor3 = Color3.fromRGB(240, 255, 240)
+TitleLabel.Font = Enum.Font.GothamBold
+TitleLabel.TextSize = 12
+TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+local TermBtn = Instance.new("TextButton", TitleBar)
+TermBtn.Name = "TermBtn"
+TermBtn.Size = UDim2.new(0, 24, 0, 24)
+TermBtn.Position = UDim2.new(1, -30, 0.5, -12)
+TermBtn.BackgroundColor3 = Color3.fromRGB(215, 55, 55)
+TermBtn.Text = "✕"
+TermBtn.TextColor3 = Color3.new(1, 1, 1)
+TermBtn.Font = Enum.Font.GothamBold
+TermBtn.TextSize = 12
+Instance.new("UICorner", TermBtn).CornerRadius = UDim.new(0, 5)
+
+local CollapseBtn = Instance.new("TextButton", TitleBar)
+CollapseBtn.Name = "CollapseBtn"
+CollapseBtn.Size = UDim2.new(0, 24, 0, 24)
+CollapseBtn.Position = UDim2.new(1, -58, 0.5, -12)
+CollapseBtn.BackgroundColor3 = Color3.fromRGB(45, 120, 85)
+CollapseBtn.Text = "▲"
+CollapseBtn.TextColor3 = Color3.new(1, 1, 1)
+CollapseBtn.Font = Enum.Font.GothamBold
+CollapseBtn.TextSize = 12
+Instance.new("UICorner", CollapseBtn).CornerRadius = UDim.new(0, 5)
+
+-- Перетаскивание окна
+local dragToggle, dragStart, startPos
+TitleBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragToggle = true
+        dragStart = input.Position
+        startPos = MainFrame.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then dragToggle = false end
+        end)
     end
 end)
 
-print("--- [SPY] Ожидание начала раунда и смены таргетов в консоли (F9)... ---")
+UserInputService.InputChanged:Connect(function(input)
+    if dragToggle and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - dragStart
+        MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+end)
+
+-- === ПАНЕЛЬ КНОПОК ===
+local ControlsFrame = Instance.new("Frame", MainFrame)
+ControlsFrame.Name = "ControlsFrame"
+ControlsFrame.Size = UDim2.new(1, -16, 0, 68)
+ControlsFrame.Position = UDim2.new(0, 8, 0, 40)
+ControlsFrame.BackgroundTransparency = 1
+
+local function MakeBtn(text: string, color: Color3, pos: UDim2, size: UDim2): TextButton
+    local btn = Instance.new("TextButton", ControlsFrame)
+    btn.Size = size
+    btn.Position = pos
+    btn.BackgroundColor3 = color
+    btn.Text = text
+    btn.TextColor3 = Color3.new(1, 1, 1)
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 10
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+    return btn
+end
+
+-- Ряд 1: Скан данных | Ловушка Remotes
+local BtnScanData = MakeBtn("🔍 1. СКАН ДАННЫХ", Color3.fromRGB(35, 120, 185), UDim2.new(0, 0, 0, 0), UDim2.new(0.49, -2, 0, 30))
+local BtnSniffRemotes = MakeBtn("📡 2. СНИФФЕР СЕТИ [ВКЛ]", Color3.fromRGB(45, 155, 95), UDim2.new(0.51, 0, 0, 0), UDim2.new(0.49, 0, 0, 30))
+
+-- Ряд 2: Инспекция скриптов | Копировать | Очистить
+local BtnInspectScript = MakeBtn("🔬 3. АНАЛИЗ СКРИПТА", Color3.fromRGB(130, 65, 175), UDim2.new(0, 0, 0, 34), UDim2.new(0.42, -2, 0, 30))
+local BtnCopy = MakeBtn("📋 COPY", Color3.fromRGB(195, 130, 40), UDim2.new(0.42, 2, 0, 34), UDim2.new(0.35, -2, 0, 30))
+local BtnClear = MakeBtn("🗑", Color3.fromRGB(180, 55, 55), UDim2.new(0.77, 2, 0, 34), UDim2.new(0.23, -2, 0, 30))
+
+-- === ОКНО ВЫВОДА ЛОГОВ ===
+local LogContainer = Instance.new("ScrollingFrame", MainFrame)
+LogContainer.Name = "LogContainer"
+LogContainer.Size = UDim2.new(1, -16, 1, -120)
+LogContainer.Position = UDim2.new(0, 8, 0, 114)
+LogContainer.BackgroundColor3 = Color3.fromRGB(13, 14, 18)
+LogContainer.ScrollBarThickness = 4
+LogContainer.ScrollBarImageColor3 = Color3.fromRGB(70, 140, 100)
+LogContainer.CanvasSize = UDim2.new(0, 0, 0, 0)
+Instance.new("UICorner", LogContainer).CornerRadius = UDim.new(0, 6)
+
+local LogLayout = Instance.new("UIListLayout", LogContainer)
+LogLayout.SortOrder = Enum.SortOrder.LayoutOrder
+LogLayout.Padding = UDim.new(0, 2)
+
+local logCount = 0
+local logStringBuffer = ""
+
+local function AddLog(msg: string, msgType: string?)
+    if isTerminated then return end
+    logCount = logCount + 1
+
+    local color = Color3.fromRGB(210, 210, 210)
+    local prefix = "[INFO]"
+
+    if msgType == "SUCCESS" or msgType == "OK" then
+        color = Color3.fromRGB(100, 255, 130)
+        prefix = "[OK]"
+    elseif msgType == "ERROR" or msgType == "ERR" then
+        color = Color3.fromRGB(255, 80, 80)
+        prefix = "[ERR]"
+    elseif msgType == "WARN" then
+        color = Color3.fromRGB(255, 185, 60)
+        prefix = "[WARN]"
+    elseif msgType == "PACKET" then
+        color = Color3.fromRGB(255, 110, 220)
+        prefix = "[PACKET]"
+    elseif msgType == "DATA" then
+        color = Color3.fromRGB(80, 200, 255)
+        prefix = "[DATA]"
+    end
+
+    local timeStr = os.date("%H:%M:%S")
+    local lineText = string.format("%s %s %s", timeStr, prefix, msg)
+    logStringBuffer = logStringBuffer .. lineText .. "\n"
+
+    local lbl = Instance.new("TextLabel", LogContainer)
+    lbl.Size = UDim2.new(1, -8, 0, 0)
+    lbl.AutomaticSize = Enum.AutomaticSize.Y
+    lbl.BackgroundTransparency = 1
+    lbl.Text = lineText
+    lbl.TextColor3 = color
+    lbl.Font = Enum.Font.Code
+    lbl.TextSize = 10
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.TextWrapped = true
+    lbl.LayoutOrder = logCount
+
+    task.defer(function()
+        if LogContainer and LogContainer.Parent then
+            LogContainer.CanvasSize = UDim2.new(0, 0, 0, LogLayout.AbsoluteContentSize.Y + 10)
+            LogContainer.CanvasPosition = Vector2.new(0, 999999)
+        end
+    end)
+end
+
+-- Сворачивание / разворачивание
+CollapseBtn.MouseButton1Click:Connect(function()
+    isCollapsed = not isCollapsed
+    CollapseBtn.Text = isCollapsed and "▼" or "▲"
+    LogContainer.Visible = not isCollapsed
+    TweenService:Create(MainFrame, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        Size = isCollapsed and UDim2.new(0, WINDOW_WIDTH, 0, COLLAPSED_HEIGHT) or UDim2.new(0, WINDOW_WIDTH, 0, EXPANDED_HEIGHT)
+    }):Play()
+end)
+
+-- Очистка
+BtnClear.MouseButton1Click:Connect(function()
+    logStringBuffer = ""
+    logCount = 0
+    for _, child in ipairs(LogContainer:GetChildren()) do
+        if child:IsA("TextLabel") then child:Destroy() end
+    end
+    LogContainer.CanvasSize = UDim2.new(0, 0, 0, 0)
+    AddLog("Логи очищены", "INFO")
+end)
+
+-- Копирование
+BtnCopy.MouseButton1Click:Connect(function()
+    if logStringBuffer == "" then
+        BtnCopy.Text = "ПУСТО!"
+        task.wait(1)
+        BtnCopy.Text = "📋 COPY"
+        return
+    end
+
+    local setclip = setclipboard or toclipboard or set_clipboard or (Clipboard and Clipboard.set)
+    if setclip then
+        pcall(function() setclip(logStringBuffer) end)
+        BtnCopy.Text = "СКОПИРОВАНО!"
+        BtnCopy.BackgroundColor3 = Color3.fromRGB(50, 180, 80)
+    else
+        BtnCopy.Text = "НЕТ ДОСТУПА"
+        BtnCopy.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+    end
+    task.wait(1.5)
+    BtnCopy.Text = "📋 COPY"
+    BtnCopy.BackgroundColor3 = Color3.fromRGB(195, 130, 40)
+end)
+
+-- Хелпер для дампа таблиц
+local function DumpTableRecursive(tbl: { [any]: any }, depth: number, maxDepth: number, visited: { [any]: boolean }): string
+    if depth > maxDepth then return "{...}" end
+    if visited[tbl] then return "{circular...}" end
+    visited[tbl] = true
+
+    local parts = {}
+    for k, v in pairs(tbl) do
+        local keyStr = tostring(k)
+        local valStr = ""
+        if type(v) == "table" then
+            valStr = DumpTableRecursive(v, depth + 1, maxDepth, visited)
+        elseif type(v) == "string" then
+            valStr = string.format("%q", v)
+        else
+            valStr = tostring(v)
+        end
+        table.insert(parts, string.format("%s: %s", keyStr, valStr))
+    end
+    return "{" .. table.concat(parts, ", ") .. "}"
+end
+
+local function FormatArgument(arg: any): string
+    if type(arg) == "table" then
+        return DumpTableRecursive(arg, 1, 3, {})
+    elseif type(arg) == "string" then
+        return string.format("%q", arg)
+    else
+        return tostring(arg)
+    end
+end
+
+-- =====================================================================
+-- 1. СКАН ДАННЫХ В REPLICATEDSTORAGE / PLAYERS / WORKSPACE
+-- =====================================================================
+local function RunDataScan()
+    AddLog("=== НАЧАЛО СКАНИРОВАНИЯ ДАННЫХ ИГРЫ ===", "INFO")
+
+    local foundCount = 0
+
+    -- 1. Поиск по ReplicatedStorage
+    AddLog("1. Поиск объектов Assassin в ReplicatedStorage...", "INFO")
+    for _, item in ipairs(ReplicatedStorage:GetDescendants()) do
+        local lowerName = string.lower(item.Name)
+        if string.find(lowerName, "target") or string.find(lowerName, "assassin") or string.find(lowerName, "round") or string.find(lowerName, "role") then
+            foundCount = foundCount + 1
+            local valInfo = ""
+            if item:IsA("ValueBase") then
+                valInfo = " = " .. tostring((item :: any).Value)
+            end
+            AddLog(string.format("RS -> %s (%s)%s", item.Name, item.ClassName, valInfo), "DATA")
+        end
+    end
+
+    -- 2. Поиск атрибутов у игроков
+    AddLog("2. Проверка атрибутов игроков...", "INFO")
+    local myAttrs = LocalPlayer:GetAttributes()
+    local myAttrList = {}
+    for k, v in pairs(myAttrs) do
+        table.insert(myAttrList, string.format("%s=%s", tostring(k), tostring(v)))
+    end
+    if #myAttrList > 0 then
+        AddLog("Мои атрибуты: " .. table.concat(myAttrList, ", "), "OK")
+    else
+        AddLog("У LocalPlayer нет активных атрибутов", "WARN")
+    end
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer then
+            local pAttrs = plr:GetAttributes()
+            for k, v in pairs(pAttrs) do
+                local kLower = string.lower(tostring(k))
+                if string.find(kLower, "target") or string.find(kLower, "assassin") or string.find(kLower, "role") then
+                    AddLog(string.format("Атрибут %s: %s=%s", plr.DisplayName, tostring(k), tostring(v)), "OK")
+                    foundCount = foundCount + 1
+                end
+            end
+        end
+    end
+
+    AddLog(string.format("=== СКАН ЗАВЕРШЕН. Найдено записей: %d ===", foundCount), "SUCCESS")
+end
+
+BtnScanData.MouseButton1Click:Connect(RunDataScan)
+
+-- =====================================================================
+-- 2. СНИФФЕР СЕТИ (REMOTE EVENTS & REMOTE FUNCTIONS)
+-- =====================================================================
+local isSniffing = false
+
+local function StopSniffer()
+    isSniffing = false
+    for _, conn in ipairs(remoteConnections) do
+        if conn and conn.Connected then pcall(function() conn:Disconnect() end) end
+    end
+    table.clear(remoteConnections)
+    BtnSniffRemotes.Text = "📡 2. СНИФФЕР [ВЫКЛ]"
+    BtnSniffRemotes.BackgroundColor3 = Color3.fromRGB(150, 45, 45)
+    AddLog("Сниффер пакетов остановлен", "WARN")
+end
+
+local function StartSniffer()
+    if isSniffing then
+        StopSniffer()
+        return
+    end
+
+    isSniffing = true
+    BtnSniffRemotes.Text = "📡 2. СНИФФЕР [АКТИВЕН]"
+    BtnSniffRemotes.BackgroundColor3 = Color3.fromRGB(40, 180, 80)
+    AddLog("Установка перехватов на RemoteEvents в ReplicatedStorage...", "INFO")
+
+    local hooksInstalled = 0
+    for _, obj in ipairs(ReplicatedStorage:GetDescendants()) do
+        if obj:IsA("RemoteEvent") then
+            local rName = string.lower(obj.Name)
+            -- Перехватываем всё, что может быть связано с игрой, раундом, ролями, таргетами
+            if string.find(rName, "game") or string.find(rName, "round") or string.find(rName, "target") 
+               or string.find(rName, "role") or string.find(rName, "player") or string.find(rName, "event") 
+               or string.find(rName, "kill") or string.find(rName, "match") or string.find(rName, "assassin") then
+                
+                hooksInstalled = hooksInstalled + 1
+                local conn = obj.OnClientEvent:Connect(function(...)
+                    local args = {...}
+                    local formattedArgs = {}
+                    for i, arg in ipairs(args) do
+                        table.insert(formattedArgs, string.format("#%d: %s", i, FormatArgument(arg)))
+                    end
+                    local fullMsg = string.format("RE [%s] -> %s", obj.Name, table.concat(formattedArgs, " | "))
+                    AddLog(fullMsg, "PACKET")
+                end)
+                table.insert(remoteConnections, conn)
+            end
+        end
+    end
+
+    AddLog(string.format("Сниффер активен! Установлено ловушек: %d. Ждём события раунда...", hooksInstalled), "SUCCESS")
+end
+
+BtnSniffRemotes.MouseButton1Click:Connect(StartSniffer)
+
+-- =====================================================================
+-- 3. АНАЛИЗ СКРИПТОВ, ИЗМЕНЯЮЩИХ TARGETNAME (UPVALUES & CONNECTIONS)
+-- =====================================================================
+local function RunScriptAnalysis()
+    AddLog("=== АНАЛИЗ КЛИЕНТСКИХ СКРИПТОВ ASSASSIN ===", "INFO")
+
+    local pGui = LocalPlayer:FindFirstChildOfClass("PlayerGui") or LocalPlayer:FindFirstChild("PlayerGui")
+    if not pGui then
+        AddLog("PlayerGui не найден!", "ERROR")
+        return
+    end
+
+    local targetLabel = pGui:FindFirstChild("TargetName", true)
+    if not targetLabel or not targetLabel:IsA("TextLabel") then
+        AddLog("TargetName не найден в PlayerGui!", "WARN")
+        return
+    end
+
+    AddLog("Найден элемент: " .. targetLabel:GetFullName(), "OK")
+    AddLog(string.format("Статус: Text='%s', Visible=%s, Parent.Visible=%s", 
+        targetLabel.Text, 
+        tostring(targetLabel.Visible), 
+        tostring(targetLabel.Parent and (targetLabel.Parent :: any).Visible)), "DATA")
+
+    -- Проверка подключений к событию смены текста
+    local getconns = getconnections or (debug and (debug :: any).getconnections)
+    if not getconns then
+        AddLog("Функция getconnections не поддерживается вашим инжектором.", "WARN")
+    else
+        local conns = getconns(targetLabel:GetPropertyChangedSignal("Text"))
+        AddLog(string.format("Подключений к TextChanged: %d", #conns), "INFO")
+
+        for idx, c in ipairs(conns) do
+            local fn = c.Function
+            AddLog(string.format("Соединение #%d: %s", idx, tostring(fn)), "OK")
+
+            local getups = getupvalues or (debug and (debug :: any).getupvalues)
+            if getups and fn then
+                local success, ups = pcall(function() return getups(fn) end)
+                if success and ups then
+                    AddLog("Внутренние переменные функции (Upvalues):", "DATA")
+                    for uKey, uVal in pairs(ups) do
+                        AddLog(string.format("  -> [%s] (%s) = %s", tostring(uKey), type(uVal), FormatArgument(uVal)), "DATA")
+                    end
+                end
+            end
+        end
+    end
+
+    -- Сканирование скриптов внутри MainGUI.Game
+    local mGui = pGui:FindFirstChild("MainGUI")
+    local gameFolder = mGui and mGui:FindFirstChild("Game")
+    if gameFolder then
+        AddLog("Скрипты внутри MainGUI.Game:", "INFO")
+        for _, sc in ipairs(gameFolder:GetDescendants()) do
+            if sc:IsA("LocalScript") or sc:IsA("ModuleScript") then
+                AddLog(string.format("  * %s (%s)", sc.Name, sc.ClassName), "OK")
+            end
+        end
+    end
+
+    AddLog("=== АНАЛИЗ СКРИПТОВ ЗАВЕРШЕН ===", "SUCCESS")
+end
+
+BtnInspectScript.MouseButton1Click:Connect(RunScriptAnalysis)
+
+-- =====================================================================
+-- ЗАКРЫТИЕ И ОЧИСТКА
+-- =====================================================================
+local function Terminate()
+    if isTerminated then return end
+    isTerminated = true
+
+    StopSniffer()
+
+    for _, conn in ipairs(generalConnections) do
+        if conn and conn.Connected then pcall(function() conn:Disconnect() end) end
+    end
+    table.clear(generalConnections)
+
+    if ScreenGui and ScreenGui.Parent then
+        ScreenGui:Destroy()
+    end
+    print("[MM2 SPY SCAN1] Завершено.")
+end
+
+TermBtn.MouseButton1Click:Connect(Terminate)
+
+-- Автостарт сниффера при запуске скрипта
+StartSniffer()
+AddLog("MM2 Assassin Spy [scan1] запущен!", "SUCCESS")
+AddLog("Нажмите кнопки вверху для сканирования или следите за пакетами.", "INFO")
