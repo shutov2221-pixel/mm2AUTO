@@ -464,6 +464,19 @@ end
 -- =====================================================================
 -- СЕТЕВОЙ ГИБРИД: ПАКЕТНЫЙ ПЕРЕХВАТ (ChangeTarget) + РЕЗЕРВНЫЙ UI WATCHDOG
 -- =====================================================================
+local function FindRemoteEvent(name: string): RemoteEvent?
+    local direct = ReplicatedStorage:FindFirstChild(name)
+    if direct and direct:IsA("RemoteEvent") then return direct end
+    local deep = ReplicatedStorage:FindFirstChild(name, true)
+    if deep and deep:IsA("RemoteEvent") then return deep end
+    for _, item in ipairs(ReplicatedStorage:GetDescendants()) do
+        if item:IsA("RemoteEvent") and item.Name == name then
+            return item
+        end
+    end
+    return nil
+end
+
 local networkTargetConn: RBXScriptConnection? = nil
 local roundEndConn: RBXScriptConnection? = nil
 local chainConnection: RBXScriptConnection? = nil
@@ -563,8 +576,8 @@ local function StartKillLoop()
         end
 
         -- 1. СЕТЕВОЙ ПЕРЕХВАТ: Слушаем ChangeTarget RemoteEvent (0 мс задержки)
-        local changeTargetEvent = ReplicatedStorage:FindFirstChild("ChangeTarget")
-        if changeTargetEvent and changeTargetEvent:IsA("RemoteEvent") then
+        local changeTargetEvent = FindRemoteEvent("ChangeTarget")
+        if changeTargetEvent then
             if networkTargetConn then networkTargetConn:Disconnect() end
             networkTargetConn = changeTargetEvent.OnClientEvent:Connect(function(targetName: any, _, _, targetUserId: any)
                 if not isRunning or isTerminated then return end
@@ -588,14 +601,14 @@ local function StartKillLoop()
                     AttackTargetPlayer(targetPlr, knife)
                 end
             end)
-            Log("📡 Сетевой перехват [ChangeTarget] подключен (0 мс задержки)", "SUCCESS")
+            Log("📡 Сетевой перехват [ChangeTarget] подключен (" .. changeTargetEvent.Name .. ")", "SUCCESS")
         else
-            Log("Предупреждение: ReplicatedStorage.ChangeTarget не найден, работаем через UI", "WARN")
+            Log("Предупреждение: ChangeTarget не найден, работаем через UI", "WARN")
         end
 
         -- 2. СЕТЕВОЙ ПЕРЕХВАТ ОКОНЧАНИЯ РАУНДА (RoundEndFade)
-        local roundEndEvent = ReplicatedStorage:FindFirstChild("RoundEndFade")
-        if roundEndEvent and roundEndEvent:IsA("RemoteEvent") then
+        local roundEndEvent = FindRemoteEvent("RoundEndFade")
+        if roundEndEvent then
             if roundEndConn then roundEndConn:Disconnect() end
             roundEndConn = roundEndEvent.OnClientEvent:Connect(function()
                 if isRunning then
@@ -680,11 +693,11 @@ end
 -- =====================================================================
 local function InspectAssassinData()
     Log("--- СНИФФЕР ДАННЫХ ASSASSIN ---", "TARGET")
-    local changeTargetEvent = ReplicatedStorage:FindFirstChild("ChangeTarget")
+    local changeTargetEvent = FindRemoteEvent("ChangeTarget")
     if changeTargetEvent then
-        Log("✓ Найден RemoteEvent: ReplicatedStorage.ChangeTarget", "SUCCESS")
+        Log("✓ Найден RemoteEvent: " .. changeTargetEvent:GetFullName(), "SUCCESS")
     else
-        Log("✗ ReplicatedStorage.ChangeTarget не найден", "WARN")
+        Log("✗ RemoteEvent ChangeTarget не найден", "WARN")
     end
 
     local myAttrs = LocalPlayer:GetAttributes()
