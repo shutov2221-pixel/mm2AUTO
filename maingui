@@ -43,13 +43,13 @@ local initialSavedTwin = LoadTwinName()
 local SETTINGS = {
     AutoFarmEnabled = false,
     AutoVoteEnabled = false,
-    Speed = 35, -- Оптимальная скорость CFrame-глайда (30-45 studs/s)
+    Speed = 35, -- Базовая скорость (регулирует задержку ТП между монетами)
     FpsCap = 20,
     PotatoMode = false,
     BagFullMode = "Reset", -- "Reset" | "KillAll"
     GameMode = (initialSavedTwin ~= "" and "Twin" or "Solo"), -- "Twin" | "Solo"
     TwinName = initialSavedTwin,
-    UnderfloorOffset = 3.8 -- Смещение под карту (студы ниже монеты)
+    UnderfloorOffset = 3.5 -- Смещение под карту (студы ниже монеты)
 }
 
 local MAP_PRIORITIES = {
@@ -1443,8 +1443,8 @@ local function isCoinCollectedByServer(coin)
     return false
 end
 
--- === СВЕРХБЫСТРЫЙ CFRAME-ГЛАЙД ПОД КАРТОЙ (ВАРИАНТ А: С ЗАЩИТОЙ RATE-LIMIT) ===
-local function GlideCollectCoin(targetPosition: Vector3, targetCoin: Instance, bv: BodyVelocity, bg: BodyGyro): boolean
+-- === МГНОВЕННЫЙ ТЕЛЕПОРТ ПОД КАРТОЙ (ВАРИАНТ Б: С ЖЕСТКИМ RATE-LIMITER) ===
+local function TeleportCollectCoin(targetPosition: Vector3, targetCoin: Instance, bv: BodyVelocity, bg: BodyGyro): boolean
     local char = rt:Character()
     if not char or not char.PrimaryPart then return false end
 
@@ -1452,64 +1452,21 @@ local function GlideCollectCoin(targetPosition: Vector3, targetCoin: Instance, b
     local hum = char:FindFirstChildOfClass("Humanoid")
     if hum and hum.Health <= 0 then return false end
 
-    local underfloorOffset = SETTINGS.UnderfloorOffset or 3.8
+    local underfloorOffset = SETTINGS.UnderfloorOffset or 3.5
     local finalPosition = targetPosition - Vector3.new(0, underfloorOffset, 0)
 
-    local startPos = hrp.Position
-    local totalDistance = (finalPosition - startPos).Magnitude
+    -- 1. Расчет задержки безопасности от скорости в GUI (10 - 100)
+    -- Скорость 20-30 -> ~0.95с - 1.05с (безопасно)
+    -- Скорость 35-40 -> ~0.88с - 0.92с (ровно ~45 сек на 50 монет)
+    -- Скорость 50-70 -> ~0.70с - 0.80с (высокая скорость)
+    -- Скорость 100   -> ~0.55с (максимум)
+    local speedFactor = math.clamp(SETTINGS.Speed, 10, 100) / 100
+    local coinDelay = math.clamp(1.15 - (speedFactor * 0.60), 0.55, 1.10)
 
-    -- Рассчитываем длительность плавного перехода исходя из текущей скорости (30-45 studs/s)
-    local speed = math.clamp(SETTINGS.Speed, 10, 100)
-    local duration = totalDistance / speed
-
-    UpdateStatus(string.format("Фарм: Глайд под монету (%.0f ст, %.1fс)", totalDistance, duration), Color3.fromRGB(150, 255, 150))
-
-    -- 1. Непрерывный CFrame-глайд под картой на Heartbeat (без разрывов физики и телепорт-флагов)
-    if duration > 0.03 then
-        local elapsed = 0
-        local forwardVector = hrp.CFrame.LookVector
-        local dir2D = Vector3.new(finalPosition.X - startPos.X, 0, finalPosition.Z - startPos.Z)
-        if dir2D.Magnitude > 0.1 then
-            forwardVector = dir2D.Unit
-        end
-
-        while elapsed < duration and not IsTerminated and SETTINGS.AutoFarmEnabled do
-            local dt = RunService.Heartbeat:Wait()
-            elapsed = elapsed + dt
-            local alpha = math.clamp(elapsed / duration, 0, 1)
-
-            -- Плавная интерполяция координаты под картой
-            local currentPos = startPos:Lerp(finalPosition, alpha)
-            local glideCF = CFrame.new(currentPos, currentPos + forwardVector) * CFrame.Angles(math.rad(-90), 0, 0)
-
-            hrp.CFrame = glideCF
-            if bg and bg.Parent then bg.CFrame = glideCF end
-            if bv and bv.Parent then bv.Velocity = Vector3.zero end
-            hrp.AssemblyLinearVelocity = Vector3.zero
-            hrp.AssemblyAngularVelocity = Vector3.zero
-
-            -- Если монета уже забрана другим игроком прямо во время полёта — сразу прекращаем глайд
-            if not targetCoin or not targetCoin.Parent or isCoinCollectedByServer(targetCoin) then
-                return false
-            end
-            if hum and hum.Health <= 0 then return false end
-        end
-    end
-
-    -- Финальная точная фиксация строго под монетой
-    local finalCF = CFrame.new(finalPosition) * CFrame.Angles(math.rad(-90), 0, 0)
-    hrp.CFrame = finalCF
-    if bg and bg.Parent then bg.CFrame = finalCF end
-    if bv and bv.Parent then bv.Velocity = Vector3.zero end
-    hrp.AssemblyLinearVelocity = Vector3.zero
-    hrp.AssemblyAngularVelocity = Vector3.zero
-
-    if not SETTINGS.AutoFarmEnabled or IsTerminated then return false end
-
-    -- 2. Серверный Rate-Limiter: гарантируем, что между подборами монет прошло не менее 0.85с
+    -- 2. Серверный Rate-Limiter: гарантируем, что между подборами монет прошло не менее coinDelay
     local timeSinceLast = tick() - LastCoinPickupTime
-    if timeSinceLast < MIN_COIN_INTERVAL then
-        local waitRemaining = MIN_COIN_INTERVAL - timeSinceLast
+    if timeSinceLast < coinDelay then
+        local waitRemaining = coinDelay - timeSinceLast
         local waitStart = tick()
         while (tick() - waitStart < waitRemaining) and not IsTerminated and SETTINGS.AutoFarmEnabled do
             task.wait(0.03)
@@ -1517,24 +1474,38 @@ local function GlideCollectCoin(targetPosition: Vector3, targetCoin: Instance, b
     end
 
     if not SETTINGS.AutoFarmEnabled or IsTerminated then return false end
+    if not targetCoin or not targetCoin.Parent or isCoinCollectedByServer(targetCoin) then
+        return false
+    end
 
-    -- 3. Двойной импульс касания (Head + HRP) снизу сквозь пол
+    -- 3. Мгновенный CFrame-телепорт под монету с горизонтальной ориентацией
+    local targetCF = CFrame.new(finalPosition) * CFrame.Angles(math.rad(-90), 0, 0)
+    char:PivotTo(targetCF)
+    hrp.CFrame = targetCF
+
+    if bg and bg.Parent then bg.CFrame = targetCF end
+    if bv and bv.Parent then bv.Velocity = Vector3.zero end
+    hrp.AssemblyLinearVelocity = Vector3.zero
+    hrp.AssemblyAngularVelocity = Vector3.zero
+
+    UpdateStatus(string.format("Фарм: ТП под монету [КД: %.2fс]", coinDelay), Color3.fromRGB(150, 255, 150))
+
+    -- 4. Сетевой буфер репликации (0.09с): даем серверу принять координаты
+    task.wait(0.09)
+
+    if not SETTINGS.AutoFarmEnabled or IsTerminated then return false end
+
+    -- 5. Чистый одинарный импульс касания ТОЛЬКО от HumanoidRootPart (без спама от Head)
     local touchFn = firetouchtransmitter or firetouchinterest or (syn and syn.firetouchinterest)
     pcall(function()
         if targetCoin and targetCoin.Parent and touchFn then
-            local touchPart = char:FindFirstChild("Head") or hrp
-            touchFn(touchPart, targetCoin, 0)
+            touchFn(hrp, targetCoin, 0)
             task.wait()
-            touchFn(touchPart, targetCoin, 1)
-            if touchPart ~= hrp then
-                touchFn(hrp, targetCoin, 0)
-                task.wait()
-                touchFn(hrp, targetCoin, 1)
-            end
+            touchFn(hrp, targetCoin, 1)
         end
     end)
 
-    -- 4. Ожидание подтверждения сбора сервером (ping-sync)
+    -- 6. Ожидание подтверждения сбора сервером (ping-sync)
     local collected = false
     local waitLimit = tick() + 0.4
     while tick() < waitLimit and not IsTerminated and SETTINGS.AutoFarmEnabled do
@@ -1605,7 +1576,7 @@ local function CollectCoins()
         if targetCoin then
             markCoinAsPending(targetCoin)
 
-            local pickedUp = GlideCollectCoin(targetCoin.Position, targetCoin, bv, bg)
+            local pickedUp = TeleportCollectCoin(targetCoin.Position, targetCoin, bv, bg)
             if not SETTINGS.AutoFarmEnabled or IsTerminated then break end
 
             if pickedUp and rt.touchedCoins[targetCoin] == "pending" then
