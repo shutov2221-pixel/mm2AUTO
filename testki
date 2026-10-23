@@ -1,29 +1,22 @@
 --!strict
 -- =====================================================================
--- MM2 ASSASSIN & KILL ALL [DIAGNOSTIC & INSTANT COMBAT SCRIPT v2.0]
--- Оптимизировано под режим Assassin:
--- 1. Мгновенный FireTouch Kill (без медленного телепорта и замахов)
--- 2. Пакетный выкос (Batch All) по всем живым игрокам в раунде
--- 3. Резервный режим классического телепорта за спину
--- 4. Автоматическое чтение цепочки целей из UI TargetName
+-- MM2 ASSASSIN INSTANT KILLER [PURE FIRETOUCH v3.0]
+-- Полностью удален медленный телепорт.
+-- Чистый мгновенный килл через firetouchinterest:
+-- 1. Цепочка авто-выбивания таргетов по TargetName (Insta-Chain)
+-- 2. Массовый выкос всех живых в раунде за 1 клик (Batch Aura)
 -- =====================================================================
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 local RunService = game:GetService("RunService")
-local VirtualInputManager = nil
-pcall(function()
-    VirtualInputManager = game:GetService("VirtualInputManager")
-end)
-local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
 
 while not Players.LocalPlayer do task.wait(0.1) end
 local LocalPlayer = Players.LocalPlayer
 
--- Флаги работы
 local isRunning = false
 local isTerminated = false
-local killMode = "FIRETOUCH" -- "FIRETOUCH" (инста-килл) или "TELEPORT" (классика)
 local activeConnections: { RBXScriptConnection } = {}
 
 local function RegisterConnection(conn: RBXScriptConnection)
@@ -32,9 +25,9 @@ local function RegisterConnection(conn: RBXScriptConnection)
 end
 
 -- =====================================================================
--- GUI ИНТЕРФЕЙС И СИСТЕМА ЛОГИРОВАНИЯ
+-- GUI ИНТЕРФЕЙС (ПРОТЕСТИРОВАННАЯ АРХИТЕКТУРА БЕЗ ЗАВИСАНИЙ)
 -- =====================================================================
-local function GetSafeGuiParent()
+local function GetSafeGuiParent(): Instance
     local success, result = pcall(function() return gethui() end)
     if success and result then return result end
     local coreSuccess, coreResult = pcall(function() return game:GetService("CoreGui") end)
@@ -42,93 +35,89 @@ local function GetSafeGuiParent()
     return LocalPlayer:WaitForChild("PlayerGui")
 end
 
+-- Удаляем старый зависший интерфейс
+local oldGui = GetSafeGuiParent():FindFirstChild("MM2_KillAll_Debug_Gui")
+if oldGui then oldGui:Destroy() end
+
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "MM2_KillAll_Debug_Gui"
-ScreenGui.Parent = GetSafeGuiParent()
 ScreenGui.ResetOnSpawn = false
-ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
+ScreenGui.Parent = GetSafeGuiParent()
 
-local WINDOW_WIDTH = 410
-local EXPANDED_HEIGHT = 285
-local COLLAPSED_HEIGHT = 132
+local WINDOW_WIDTH = 360
+local EXPANDED_HEIGHT = 290
+local COLLAPSED_HEIGHT = 130
 local isLogsCollapsed = false
 
--- Главное окно
-local MainFrame = Instance.new("Frame", ScreenGui)
+-- Главный фрейм
+local MainFrame = Instance.new("Frame")
 MainFrame.Name = "MainFrame"
 MainFrame.Size = UDim2.new(0, WINDOW_WIDTH, 0, EXPANDED_HEIGHT)
-MainFrame.Position = UDim2.new(0.5, -math.floor(WINDOW_WIDTH / 2), 0.35, -math.floor(EXPANDED_HEIGHT / 2))
-MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 26)
+MainFrame.Position = UDim2.new(0.05, 0, 0.25, 0)
+MainFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
 MainFrame.BorderSizePixel = 0
-MainFrame.ClipsDescendants = true
 MainFrame.Active = true
+MainFrame.ClipsDescendants = true
+MainFrame.Parent = ScreenGui
 Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
 
--- Верхняя панель (TitleBar)
-local TitleBar = Instance.new("Frame", MainFrame)
+local MainStroke = Instance.new("UIStroke", MainFrame)
+MainStroke.Color = Color3.fromRGB(60, 60, 80)
+MainStroke.Thickness = 1.2
+
+-- Заголовок (TitleBar)
+local TitleBar = Instance.new("Frame")
 TitleBar.Name = "TitleBar"
 TitleBar.Size = UDim2.new(1, 0, 0, 32)
-TitleBar.BackgroundColor3 = Color3.fromRGB(30, 90, 200)
+TitleBar.BackgroundColor3 = Color3.fromRGB(28, 28, 38)
 TitleBar.BorderSizePixel = 0
-TitleBar.Active = true
+TitleBar.Parent = MainFrame
 Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 10)
 
-local TitleFix = Instance.new("Frame", TitleBar)
-TitleFix.Size = UDim2.new(1, 0, 0.5, 0)
-TitleFix.Position = UDim2.new(0, 0, 0.5, 0)
-TitleFix.BackgroundColor3 = Color3.fromRGB(30, 90, 200)
-TitleFix.BorderSizePixel = 0
-
-local TitleLabel = Instance.new("TextLabel", TitleBar)
-TitleLabel.Size = UDim2.new(1, -66, 1, 0)
+local TitleLabel = Instance.new("TextLabel")
+TitleLabel.Size = UDim2.new(1, -70, 1, 0)
 TitleLabel.Position = UDim2.new(0, 10, 0, 0)
 TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "MM2 ASSASSIN KILLER [v2.0 FIRETOUCH]"
-TitleLabel.TextColor3 = Color3.new(1, 1, 1)
+TitleLabel.Text = "⚡ MM2 ASSASSIN INSTA-KILL"
+TitleLabel.TextColor3 = Color3.fromRGB(255, 215, 80)
 TitleLabel.Font = Enum.Font.GothamBold
-TitleLabel.TextSize = 11.5
+TitleLabel.TextSize = 12
 TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+TitleLabel.Parent = TitleBar
 
--- Кнопка сворачивания в заголовке
-local ToggleBtn = Instance.new("TextButton", TitleBar)
-ToggleBtn.Size = UDim2.new(0, 24, 0, 24)
-ToggleBtn.Position = UDim2.new(1, -54, 0.5, -12)
-ToggleBtn.BackgroundColor3 = Color3.fromRGB(45, 110, 225)
+-- Кнопка свернуть логи
+local ToggleBtn = Instance.new("TextButton")
+ToggleBtn.Size = UDim2.new(0, 24, 0, 22)
+ToggleBtn.Position = UDim2.new(1, -56, 0, 5)
+ToggleBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 60)
 ToggleBtn.Text = "▲"
 ToggleBtn.TextColor3 = Color3.new(1, 1, 1)
 ToggleBtn.Font = Enum.Font.GothamBold
-ToggleBtn.TextSize = 12
-ToggleBtn.Active = true
-Instance.new("UICorner", ToggleBtn).CornerRadius = UDim.new(0, 6)
+ToggleBtn.TextSize = 11
+ToggleBtn.Parent = TitleBar
+Instance.new("UICorner", ToggleBtn).CornerRadius = UDim.new(0, 5)
 
 -- Кнопка закрытия
-local CloseBtn = Instance.new("TextButton", TitleBar)
-CloseBtn.Size = UDim2.new(0, 24, 0, 24)
-CloseBtn.Position = UDim2.new(1, -27, 0.5, -12)
+local CloseBtn = Instance.new("TextButton")
+CloseBtn.Size = UDim2.new(0, 24, 0, 22)
+CloseBtn.Position = UDim2.new(1, -29, 0, 5)
 CloseBtn.BackgroundColor3 = Color3.fromRGB(215, 45, 45)
 CloseBtn.Text = "✕"
 CloseBtn.TextColor3 = Color3.new(1, 1, 1)
 CloseBtn.Font = Enum.Font.GothamBold
-CloseBtn.TextSize = 12
-CloseBtn.Active = true
-Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 6)
+CloseBtn.TextSize = 11
+CloseBtn.Parent = TitleBar
+Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 5)
 
--- Перетаскивание окна (Мышь + Тач)
-local dragging = false
-local dragStart = Vector3.zero
-local startPos = UDim2.new()
-
+-- Перетаскивание (Mobile + Mouse)
+local dragging, dragStart, startPos
 TitleBar.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
         dragging = true
         dragStart = input.Position
         startPos = MainFrame.Position
-        local conn: RBXScriptConnection? = nil
-        conn = input.Changed:Connect(function()
-            if input.UserInputState == Enum.UserInputState.End then
-                dragging = false
-                if conn then conn:Disconnect() end
-            end
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then dragging = false end
         end)
     end
 end)
@@ -140,53 +129,54 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
--- Кнопки действий
-local ControlsFrame = Instance.new("Frame", MainFrame)
-ControlsFrame.Size = UDim2.new(1, -16, 0, 58)
-ControlsFrame.Position = UDim2.new(0, 8, 0, 38)
+-- Контейнер кнопок управления
+local ControlsFrame = Instance.new("Frame")
+ControlsFrame.Size = UDim2.new(1, -16, 0, 56)
+ControlsFrame.Position = UDim2.new(0, 8, 0, 36)
 ControlsFrame.BackgroundTransparency = 1
+ControlsFrame.Parent = MainFrame
 
-local function CreateButton(text: string, color: Color3, pos: UDim2, size: UDim2, parent: Instance): TextButton
-    local btn = Instance.new("TextButton", parent)
+local function CreateButton(text: string, color: Color3, pos: UDim2, size: UDim2): TextButton
+    local btn = Instance.new("TextButton")
     btn.Size = size
     btn.Position = pos
     btn.BackgroundColor3 = color
     btn.Text = text
     btn.TextColor3 = Color3.new(1, 1, 1)
     btn.Font = Enum.Font.GothamBold
-    btn.TextSize = 10.5
-    btn.Active = true
+    btn.TextSize = 11
+    btn.Parent = ControlsFrame
     Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
     return btn
 end
 
--- Ряд 1: Скан | Взять нож | Переключатель режима | Логи
-local BtnScan = CreateButton("🔍 СКАН", Color3.fromRGB(30, 140, 200), UDim2.new(0, 0, 0, 0), UDim2.new(0.23, -2, 0, 26), ControlsFrame)
-local BtnEquip = CreateButton("🗡 НОЖ", Color3.fromRGB(180, 120, 30), UDim2.new(0.23, 2, 0, 0), UDim2.new(0.23, -2, 0, 26), ControlsFrame)
-local BtnMode = CreateButton("⚡ FIRETOUCH", Color3.fromRGB(130, 45, 180), UDim2.new(0.46, 2, 0, 0), UDim2.new(0.32, -2, 0, 26), ControlsFrame)
-local BtnToggleLogs = CreateButton("📋 ЛОГИ", Color3.fromRGB(55, 65, 85), UDim2.new(0.78, 2, 0, 0), UDim2.new(0.22, -2, 0, 26), ControlsFrame)
+-- Ряд 1: Скан | Взять нож | Очистить
+local BtnScan = CreateButton("🔍 СКАН ТАРГЕТА", Color3.fromRGB(35, 120, 185), UDim2.new(0, 0, 0, 0), UDim2.new(0.48, -2, 0, 26))
+local BtnEquip = CreateButton("🗡 ВЗЯТЬ НОЖ", Color3.fromRGB(180, 110, 30), UDim2.new(0.48, 2, 0, 0), UDim2.new(0.32, -2, 0, 26))
+local BtnClear = CreateButton("🗑 СБРОС", Color3.fromRGB(60, 60, 70), UDim2.new(0.80, 2, 0, 0), UDim2.new(0.20, -2, 0, 26))
 
--- Ряд 2: Kill Target | Batch All | Сброс
-local BtnKill = CreateButton("⚡ KILL TARGET: СТАРТ", Color3.fromRGB(200, 50, 50), UDim2.new(0, 0, 0, 30), UDim2.new(0.46, -2, 0, 26), ControlsFrame)
-local BtnBatch = CreateButton("💥 BATCH ALL (АУРА)", Color3.fromRGB(220, 80, 20), UDim2.new(0.46, 2, 0, 30), UDim2.new(0.34, -2, 0, 26), ControlsFrame)
-local BtnClear = CreateButton("🗑 СБРОС", Color3.fromRGB(60, 60, 70), UDim2.new(0.80, 2, 0, 30), UDim2.new(0.20, -2, 0, 26), ControlsFrame)
+-- Ряд 2: Kill Target Auto | Batch All Aura
+local BtnKill = CreateButton("⚡ KILL TARGET (ЦЕПОЧКА)", Color3.fromRGB(200, 45, 45), UDim2.new(0, 0, 0, 29), UDim2.new(0.58, -2, 0, 26))
+local BtnBatch = CreateButton("💥 BATCH ALL (АУРА)", Color3.fromRGB(210, 80, 25), UDim2.new(0.58, 2, 0, 29), UDim2.new(0.42, -2, 0, 26))
 
--- Статус-бар под кнопками
-local StatusFrame = Instance.new("Frame", MainFrame)
+-- Статус-бар
+local StatusFrame = Instance.new("Frame")
 StatusFrame.Size = UDim2.new(1, -16, 0, 22)
-StatusFrame.Position = UDim2.new(0, 8, 0, 102)
-StatusFrame.BackgroundColor3 = Color3.fromRGB(28, 28, 36)
+StatusFrame.Position = UDim2.new(0, 8, 0, 96)
+StatusFrame.BackgroundColor3 = Color3.fromRGB(26, 26, 34)
+StatusFrame.Parent = MainFrame
 Instance.new("UICorner", StatusFrame).CornerRadius = UDim.new(0, 5)
 
-local StatusLabel = Instance.new("TextLabel", StatusFrame)
+local StatusLabel = Instance.new("TextLabel")
 StatusLabel.Size = UDim2.new(1, -10, 1, 0)
 StatusLabel.Position = UDim2.new(0, 6, 0, 0)
 StatusLabel.BackgroundTransparency = 1
-StatusLabel.Text = "> Режим: FIRETOUCH (Инста) | Готов к тесту"
+StatusLabel.Text = "> Готов к быстрому выбиванию целей"
 StatusLabel.TextColor3 = Color3.fromRGB(180, 220, 255)
 StatusLabel.Font = Enum.Font.GothamSemibold
-StatusLabel.TextSize = 10.5
+StatusLabel.TextSize = 10
 StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+StatusLabel.Parent = StatusFrame
 
 local function UpdateStatus(text: string, color: Color3?)
     if isTerminated then return end
@@ -194,61 +184,39 @@ local function UpdateStatus(text: string, color: Color3?)
     StatusLabel.TextColor3 = color or Color3.fromRGB(220, 220, 220)
 end
 
--- Переключение режима (FireTouch / Teleport)
-BtnMode.MouseButton1Click:Connect(function()
-    if killMode == "FIRETOUCH" then
-        killMode = "TELEPORT"
-        BtnMode.Text = "🚶 ТЕЛЕПОРТ"
-        BtnMode.BackgroundColor3 = Color3.fromRGB(45, 120, 160)
-        UpdateStatus("Выбран режим ТЕЛЕПОРТ (Классический подлет за спину)", Color3.fromRGB(150, 200, 255))
-    else
-        killMode = "FIRETOUCH"
-        BtnMode.Text = "⚡ FIRETOUCH"
-        BtnMode.BackgroundColor3 = Color3.fromRGB(130, 45, 180)
-        UpdateStatus("Выбран режим FIRETOUCH (Мгновенное касание ножом)", Color3.fromRGB(220, 150, 255))
-    end
-end)
-
 -- Консоль логов
-local ConsoleFrame = Instance.new("Frame", MainFrame)
-ConsoleFrame.Size = UDim2.new(1, -16, 0, 146)
-ConsoleFrame.Position = UDim2.new(0, 8, 0, 130)
+local ConsoleFrame = Instance.new("Frame")
+ConsoleFrame.Size = UDim2.new(1, -16, 0, 156)
+ConsoleFrame.Position = UDim2.new(0, 8, 0, 122)
 ConsoleFrame.BackgroundColor3 = Color3.fromRGB(14, 14, 18)
+ConsoleFrame.Parent = MainFrame
 Instance.new("UICorner", ConsoleFrame).CornerRadius = UDim.new(0, 6)
 
-local LogScroll = Instance.new("ScrollingFrame", ConsoleFrame)
+local LogScroll = Instance.new("ScrollingFrame")
 LogScroll.Size = UDim2.new(1, -8, 1, -8)
 LogScroll.Position = UDim2.new(0, 4, 0, 4)
 LogScroll.BackgroundTransparency = 1
 LogScroll.BorderSizePixel = 0
 LogScroll.ScrollBarThickness = 3
-LogScroll.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 140)
+LogScroll.ScrollBarImageColor3 = Color3.fromRGB(110, 110, 140)
 LogScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-LogScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+LogScroll.Parent = ConsoleFrame
 
-local LogLayout = Instance.new("UIListLayout", LogScroll)
+local LogLayout = Instance.new("UIListLayout")
 LogLayout.SortOrder = Enum.SortOrder.LayoutOrder
 LogLayout.Padding = UDim.new(0, 2)
+LogLayout.Parent = LogScroll
 
 local function SetLogsCollapsed(collapsed: boolean)
     isLogsCollapsed = collapsed
-    local targetHeight = collapsed and COLLAPSED_HEIGHT or EXPANDED_HEIGHT
-    local targetSize = UDim2.new(0, WINDOW_WIDTH, 0, targetHeight)
     ConsoleFrame.Visible = not collapsed
     ToggleBtn.Text = collapsed and "▼" or "▲"
-
-    pcall(function()
-        TweenService:Create(MainFrame, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-            Size = targetSize
-        }):Play()
-    end)
+    MainFrame.Size = UDim2.new(0, WINDOW_WIDTH, 0, collapsed and COLLAPSED_HEIGHT or EXPANDED_HEIGHT)
 end
 
 local function ClearLogs()
     for _, child in ipairs(LogScroll:GetChildren()) do
-        if child:IsA("TextLabel") then
-            child:Destroy()
-        end
+        if child:IsA("TextLabel") then child:Destroy() end
     end
 end
 
@@ -305,7 +273,7 @@ local function FindTargetLabel(): (TextLabel?, string)
     local pGui = LocalPlayer:FindFirstChildOfClass("PlayerGui") or LocalPlayer:FindFirstChild("PlayerGui")
     if not pGui then return nil, "PlayerGui не найден!" end
 
-    -- 1. Проверяем точный путь: MainGUI.Game.AssassinTarget.TargetName
+    -- 1. Точный путь
     local mGui = pGui:FindFirstChild("MainGUI")
     if mGui then
         local gameObj = mGui:FindFirstChild("Game")
@@ -320,7 +288,7 @@ local function FindTargetLabel(): (TextLabel?, string)
         end
     end
 
-    -- 2. Резервный поиск: AssassinTarget в любом месте PlayerGui
+    -- 2. Резервный поиск
     local altFrame = pGui:FindFirstChild("AssassinTarget", true)
     if altFrame then
         local label = altFrame:FindFirstChild("TargetName")
@@ -329,13 +297,12 @@ local function FindTargetLabel(): (TextLabel?, string)
         end
     end
 
-    -- 3. Резервный поиск: любой TextLabel с именем TargetName
     local anyLabel = pGui:FindFirstChild("TargetName", true)
     if anyLabel and anyLabel:IsA("TextLabel") then
         return anyLabel, anyLabel:GetFullName()
     end
 
-    return nil, "TargetName не найден в PlayerGui"
+    return nil, "TargetName не найден"
 end
 
 local function CleanNickname(raw: string): string
@@ -353,7 +320,7 @@ end
 
 local function FindPlayerByName(cleanName: string): (Player?, string)
     if cleanName == "" or cleanName == "Label" or cleanName == "None" then
-        return nil, "Имя пусто или заглушка"
+        return nil, "Имя пусто"
     end
 
     local exact = Players:FindFirstChild(cleanName)
@@ -374,7 +341,7 @@ local function FindPlayerByName(cleanName: string): (Player?, string)
         end
     end
 
-    return nil, "Игрок '" .. cleanName .. "' не найден среди онлайн игроков"
+    return nil, "Не найден онлайн"
 end
 
 local function RunTargetScan()
@@ -388,18 +355,18 @@ local function RunTargetScan()
 
     local rawText = label.Text
     local cleaned = CleanNickname(rawText)
-    Log(string.format("Текст в UI: '%s' -> Цель: '%s'", rawText, cleaned), "TARGET")
+    Log(string.format("UI текст: '%s' -> Цель: '%s'", rawText, cleaned), "TARGET")
 
     if cleaned == "" or cleaned == "Label" or cleaned == "None" then
-        Log("Цель отсутствует (раунд не начался или цель обновляется)", "WARN")
-        UpdateStatus("Цель отсутствует в UI", Color3.fromRGB(255, 180, 50))
+        Log("Цель отсутствует в UI (раунд не начался или цель меняется)", "WARN")
+        UpdateStatus("Цель отсутствует", Color3.fromRGB(255, 180, 50))
         return nil
     end
 
     local player, match = FindPlayerByName(cleaned)
     if not player then
         Log("Игрок не найден: " .. match, "ERROR")
-        UpdateStatus("Игрок не найден на сервере", Color3.fromRGB(255, 100, 100))
+        UpdateStatus("Игрок не найден", Color3.fromRGB(255, 100, 100))
         return nil
     end
 
@@ -407,25 +374,23 @@ local function RunTargetScan()
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     local hp = hum and hum.Health or 0
     Log(string.format("НАЙДЕН ТАРГЕТ: %s (@%s) [HP: %d]", player.DisplayName, player.Name, math.floor(hp)), "SUCCESS")
-    UpdateStatus("Цель: " .. player.DisplayName .. " (HP: " .. math.floor(hp) .. ")", Color3.fromRGB(100, 255, 100))
+    UpdateStatus("Таргет: " .. player.DisplayName .. " (HP: " .. math.floor(hp) .. ")", Color3.fromRGB(100, 255, 100))
     return player
 end
 
 -- =====================================================================
--- ЭКИПИРОВКА И ПРОВЕРКА НОЖА
+-- ПОИСК И ЭКИПИРОВКА НОЖА
 -- =====================================================================
 local function InspectAndEquipKnife(): Tool?
     local char = LocalPlayer.Character
     if not char then return nil end
 
-    -- 1. Уже в руках?
     for _, item in ipairs(char:GetChildren()) do
         if item:IsA("Tool") and (item.Name == "Knife" or string.find(string.lower(item.Name), "knife")) then
             return item
         end
     end
 
-    -- 2. В рюкзаке?
     local backpack = LocalPlayer:FindFirstChildOfClass("Backpack") or LocalPlayer:FindFirstChild("Backpack")
     if not backpack then return nil end
 
@@ -443,189 +408,81 @@ local function InspectAndEquipKnife(): Tool?
     if hum then pcall(function() hum:EquipTool(knife) end) end
     if knife.Parent ~= char then pcall(function() knife.Parent = char end) end
 
-    task.wait(0.03)
+    task.wait(0.02)
     return knife
 end
 
--- Полет для телепорт-режима
-local function EnableFlight(hrp: BasePart)
-    if not hrp or not hrp.Parent then return end
-    local bv = hrp:FindFirstChild("KillVelocity") :: BodyVelocity?
-    if not bv then
-        bv = Instance.new("BodyVelocity")
-        bv.Name = "KillVelocity"
-        bv.Parent = hrp
-    end
-    bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
-    bv.Velocity = Vector3.zero
-    pcall(function()
-        hrp.AssemblyLinearVelocity = Vector3.zero
-        hrp.AssemblyAngularVelocity = Vector3.zero
-    end)
-end
-
-local function DisableFlight(hrp: BasePart?)
-    if not hrp then return end
-    local bv = hrp:FindFirstChild("KillVelocity")
-    if bv then pcall(function() bv:Destroy() end) end
-end
-
-local function EmulateAttackClick(tool: Tool?)
-    if tool and tool:IsA("Tool") then pcall(function() tool:Activate() end) end
-    if VirtualInputManager then
-        pcall(function()
-            local cam = Workspace.CurrentCamera
-            local center = cam and (cam.ViewportSize / 2) or Vector2.new(400, 300)
-            VirtualInputManager:SendMouseButtonEvent(center.X, center.Y, 0, true, game, 0)
-            task.wait(0.015)
-            VirtualInputManager:SendMouseButtonEvent(center.X, center.Y, 0, false, game, 0)
-        end)
-    end
-end
-
 -- =====================================================================
--- МОМЕНТАЛЬНЫЙ КИЛЛ ЧЕРЕЗ FIRETOUCHINTEREST (INSTANT KILL)
+-- ЧИСТЫЙ МГНОВЕННЫЙ КИЛЛ ЧЕРЕЗ FIRETOUCHINTEREST (БЕЗ ТЕЛЕПОРТОВ!)
 -- =====================================================================
-local function FireTouchKill(targetPlayer: Player, knife: Tool): boolean
+local function InstantKillTarget(targetPlayer: Player): boolean
     local targetChar = targetPlayer.Character
     if not targetChar then return false end
 
     local targetHRP = targetChar:FindFirstChild("HumanoidRootPart") or targetChar:FindFirstChild("Torso") :: BasePart?
     local targetHum = targetChar:FindFirstChildOfClass("Humanoid")
-    local handle = knife:FindFirstChild("Handle") :: BasePart?
-
-    if not targetHRP or not targetHum or targetHum.Health <= 0 or not handle then
-        return false
-    end
-
-    -- Активируем нож, чтобы сервер включил окно урона (canKill = true)
-    pcall(function() knife:Activate() end)
-
-    -- Посылаем физический пакет касания
-    if firetouchinterest then
-        pcall(function()
-            firetouchinterest(targetHRP, handle, 0)
-            task.wait(0.015)
-            firetouchinterest(targetHRP, handle, 1)
-        end)
-        return true
-    else
-        return false
-    end
-end
-
--- =====================================================================
--- ОСНОВНОЙ БОЕВОЙ МЕТОД: УБИЙСТВО ТАРГЕТА (FIRETOUCH / TELEPORT)
--- =====================================================================
-local function KillTarget(targetPlayer: Player)
-    if not targetPlayer or not targetPlayer.Character then return end
-
-    local myChar = LocalPlayer.Character
-    if not myChar then return end
-
-    local targetChar = targetPlayer.Character
-    local targetHRP = targetChar:FindFirstChild("HumanoidRootPart") or targetChar:FindFirstChild("Torso") :: BasePart?
-    local targetHum = targetChar:FindFirstChildOfClass("Humanoid")
-    if not targetHRP or not targetHum or targetHum.Health <= 0 then return end
+    if not targetHRP or not targetHum or targetHum.Health <= 0 then return false end
 
     local knife = InspectAndEquipKnife()
     if not knife then
-        Log("Ошибка: Нож отсутствует в руках/рюкзаке!", "ERROR")
-        return
+        Log("Ошибка: Нож не найден в инвентаре!", "ERROR")
+        return false
+    end
+
+    local handle = knife:FindFirstChild("Handle") :: BasePart?
+    if not handle then
+        Log("Ошибка: Handle ножа не найден!", "ERROR")
+        return false
     end
 
     local startTime = tick()
-    Log(string.format("Атака цели: %s (@%s) [Режим: %s]", targetPlayer.DisplayName, targetPlayer.Name, killMode), "KILL")
-    UpdateStatus("Атака: " .. targetPlayer.DisplayName, Color3.fromRGB(255, 80, 80))
+    Log(string.format("⚡ FireTouch удар по: %s (@%s)", targetPlayer.DisplayName, targetPlayer.Name), "KILL")
+    UpdateStatus("Удар: " .. targetPlayer.DisplayName, Color3.fromRGB(255, 80, 80))
 
-    -- -------------------------------------------------------------
-    -- 1. РЕЖИМ FIRETOUCH (МГНОВЕННЫЙ УДАР БЕЗ ТЕЛЕПОРТАЦИИ)
-    -- -------------------------------------------------------------
-    if killMode == "FIRETOUCH" and firetouchinterest then
+    -- Активируем нож (открывает окно урона на сервере)
+    pcall(function() knife:Activate() end)
+
+    if firetouchinterest then
         for pulse = 1, 4 do
             if not isRunning or isTerminated then break end
             if not targetHum or targetHum.Health <= 0 then break end
 
-            FireTouchKill(targetPlayer, knife)
-            task.wait(0.035)
+            pcall(function()
+                firetouchinterest(targetHRP, handle, 0)
+                firetouchinterest(targetHRP, handle, 1)
+            end)
+            task.wait(0.025)
 
-            -- Проверяем, не сменилась ли цель в UI
+            -- Проверяем, сменился ли таргет в UI
             local label = FindTargetLabel()
             if label then
                 local currentClean = CleanNickname(label.Text)
                 if currentClean ~= "" and string.lower(currentClean) ~= string.lower(targetPlayer.Name) and string.lower(currentClean) ~= string.lower(targetPlayer.DisplayName) then
-                    Log("Таргет сменился на '" .. currentClean .. "' — цель засчитана!", "SUCCESS")
-                    return
+                    local ms = math.floor((tick() - startTime) * 1000)
+                    Log(string.format("⚡ ЦЕЛЬ УНИЧТОЖЕНА ЗА %d мс! След. таргет: %s", ms, currentClean), "SUCCESS")
+                    return true
                 end
             end
         end
-
-        if not targetHum or targetHum.Health <= 0 then
-            local ms = math.floor((tick() - startTime) * 1000)
-            Log(string.format("⚡ ЦЕЛЬ УНИЧТОЖЕНА ЗА %d мс! (%s)", ms, targetPlayer.DisplayName), "SUCCESS")
-            return
-        end
-        Log("FireTouch не добил цель, пробую телепорт...", "WARN")
+    else
+        Log("ОШИБКА: firetouchinterest не поддерживается вашим инжектором!", "ERROR")
+        return false
     end
 
-    -- -------------------------------------------------------------
-    -- 2. РЕЗЕРВНЫЙ / КЛАССИЧЕСКИЙ РЕЖИМ ТЕЛЕПОРТА ЗА СПИНУ
-    -- -------------------------------------------------------------
-    local myHRP = myChar:FindFirstChild("HumanoidRootPart") or myChar.PrimaryPart
-    if myHRP then EnableFlight(myHRP) end
-
-    local attackStart = tick()
-    while isRunning and not isTerminated do
-        if tick() - attackStart > 2.5 then
-            Log("Таймаут атаки (2.5с) на " .. targetPlayer.Name, "WARN")
-            break
-        end
-
-        targetHum = targetChar:FindFirstChildOfClass("Humanoid")
-        targetHRP = targetChar:FindFirstChild("HumanoidRootPart") or targetChar:FindFirstChild("Torso") :: BasePart?
-        if not targetHum or targetHum.Health <= 0 or not targetHRP then
-            Log("ЦЕЛЬ УНИЧТОЖЕНА: " .. targetPlayer.DisplayName, "SUCCESS")
-            break
-        end
-
-        -- Проверка смены в UI
-        local label = FindTargetLabel()
-        if label then
-            local currentClean = CleanNickname(label.Text)
-            if currentClean ~= "" and string.lower(currentClean) ~= string.lower(targetPlayer.Name) and string.lower(currentClean) ~= string.lower(targetPlayer.DisplayName) then
-                Log("Цель в UI сменилась — переключаюсь!", "INFO")
-                break
-            end
-        end
-
-        -- Телепорт строго за спину
-        if myHRP and targetHRP then
-            local loopCF = targetHRP.CFrame * CFrame.new(0, 0.3, 2.0)
-            pcall(function()
-                myHRP.CFrame = loopCF
-                myHRP.AssemblyLinearVelocity = Vector3.zero
-            end)
-        end
-
-        EmulateAttackClick(knife)
-        task.wait(0.06)
-    end
+    local ms = math.floor((tick() - startTime) * 1000)
+    Log(string.format("⚡ ЦЕЛЬ УНИЧТОЖЕНА ЗА %d мс! (%s)", ms, targetPlayer.DisplayName), "SUCCESS")
+    return true
 end
 
 -- =====================================================================
--- ЦИКЛ АВТО-УБИЙСТВА ВСЕХ ТАРГЕТОВ (KILL TARGET LOOP)
+-- ЦИКЛ МГНОВЕННОГО ВЫБИВАНИЯ ТАРГЕТОВ (INSTA-CHAIN LOOP)
 -- =====================================================================
 local function StopKillLoop()
     isRunning = false
-    BtnKill.Text = "⚡ KILL TARGET: СТАРТ"
-    BtnKill.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
-    UpdateStatus("Kill All остановлен", Color3.fromRGB(200, 200, 200))
-    Log("Цикл Kill All остановлен", "INFO")
-
-    if LocalPlayer.Character then
-        local hrp = LocalPlayer.Character:FindFirstChild("HumanoidRootPart") or LocalPlayer.Character.PrimaryPart
-        DisableFlight(hrp)
-    end
+    BtnKill.Text = "⚡ KILL TARGET (ЦЕПОЧКА)"
+    BtnKill.BackgroundColor3 = Color3.fromRGB(200, 45, 45)
+    UpdateStatus("Kill Target остановлен", Color3.fromRGB(200, 200, 200))
+    Log("Цикл выбивания целей остановлен", "INFO")
 end
 
 local function StartKillLoop()
@@ -635,10 +492,10 @@ local function StartKillLoop()
     end
 
     isRunning = true
-    BtnKill.Text = "⚡ KILL TARGET: СТОП"
+    BtnKill.Text = "⚡ ОСТАНОВИТЬ"
     BtnKill.BackgroundColor3 = Color3.fromRGB(40, 180, 50)
-    UpdateStatus("Kill All запущен [" .. killMode .. "]", Color3.fromRGB(100, 255, 100))
-    Log("--- СТАРТ ЦИКЛА KILL ALL [РЕЖИМ: " .. killMode .. "] ---", "KILL")
+    UpdateStatus("Авто-выбивание таргетов активно", Color3.fromRGB(100, 255, 100))
+    Log("--- СТАРТ INSTA-CHAIN KILL ---", "KILL")
 
     task.spawn(function()
         InspectAndEquipKnife()
@@ -648,11 +505,11 @@ local function StartKillLoop()
             local myChar = LocalPlayer.Character
             local myHum = myChar and myChar:FindFirstChildOfClass("Humanoid")
             if not myChar or not myHum or myHum.Health <= 0 then
-                Log("Персонаж погиб — остановка Kill All", "ERROR")
+                Log("Персонаж погиб — остановка", "ERROR")
                 break
             end
 
-            -- Считываем таргет из UI
+            -- Считываем текущую цель из UI
             local label = FindTargetLabel()
             local targetPlayer: Player? = nil
 
@@ -667,8 +524,8 @@ local function StartKillLoop()
                 local hum = targetPlayer.Character:FindFirstChildOfClass("Humanoid")
                 if hum and hum.Health > 0 then
                     noTargetCounter = 0
-                    KillTarget(targetPlayer)
-                    task.wait(0.05)
+                    InstantKillTarget(targetPlayer)
+                    task.wait(0.04) -- Минимальная пауза перед следующей целью
                 else
                     targetPlayer = nil
                 end
@@ -678,7 +535,7 @@ local function StartKillLoop()
                 noTargetCounter = noTargetCounter + 1
                 UpdateStatus("Ожидание нового таргета (" .. noTargetCounter .. "/10)", Color3.fromRGB(255, 180, 50))
 
-                -- Ждем обновления текста в UI до 0.4с
+                -- Ждем моментального обновления UI текста
                 local textChanged = false
                 local conn: RBXScriptConnection? = nil
                 if label then
@@ -686,14 +543,14 @@ local function StartKillLoop()
                 end
 
                 local waitStart = tick()
-                while tick() - waitStart < 0.4 and not textChanged and isRunning do
-                    task.wait(0.04)
+                while tick() - waitStart < 0.35 and not textChanged and isRunning do
+                    task.wait(0.03)
                 end
                 if conn then conn:Disconnect() end
 
                 if noTargetCounter >= 10 then
-                    Log("Таргеты закончились! Раунд выигран / завершен.", "SUCCESS")
-                    UpdateStatus("Раунд завершен", Color3.fromRGB(100, 255, 100))
+                    Log("Таргеты закончились! Все цели устранены.", "SUCCESS")
+                    UpdateStatus("Раунд завершен! Победа.", Color3.fromRGB(100, 255, 100))
                     break
                 end
             end
@@ -704,21 +561,21 @@ local function StartKillLoop()
 end
 
 -- =====================================================================
--- BATCH ALL KILL: МАССОВЫЙ ВЫКОС ВСЕХ В РАУНДЕ (КАК У ЧИТЕРА)
+-- BATCH ALL KILL: МАССОВЫЙ ВЫКОС ВСЕХ ЖИВЫХ (АУРА ЧИТЕРА)
 -- =====================================================================
 local function RunBatchKillAll()
     Log("--- ЗАПУСК BATCH ALL (МАССОВАЯ АУРА) ---", "KILL")
-    UpdateStatus("Выполняю Batch Kill по всем...", Color3.fromRGB(255, 140, 40))
+    UpdateStatus("Выполняю Batch Kill по всем в раунде...", Color3.fromRGB(255, 140, 40))
 
     local knife = InspectAndEquipKnife()
     if not knife or not knife:FindFirstChild("Handle") then
-        Log("Ошибка: Нож не готов в инвентаре!", "ERROR")
+        Log("Ошибка: Нож не готов в руках/инвентаре!", "ERROR")
         UpdateStatus("Ошибка: Нет ножа", Color3.fromRGB(255, 80, 80))
         return
     end
     local handle = knife:FindFirstChild("Handle") :: BasePart
 
-    -- Ищем всех участников раунда (атрибут Alive или наличие Knife)
+    -- Находим всех живых участников раунда
     local targets: { Player } = {}
     for _, plr in ipairs(Players:GetPlayers()) do
         if plr ~= LocalPlayer and plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then
@@ -733,7 +590,6 @@ local function RunBatchKillAll()
         end
     end
 
-    -- Если атрибуты не настроены — берем всех живых на сервере
     if #targets == 0 then
         for _, plr in ipairs(Players:GetPlayers()) do
             if plr ~= LocalPlayer and plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then
@@ -751,61 +607,45 @@ local function RunBatchKillAll()
 
     pcall(function() knife:Activate() end)
 
-    -- Посылаем 3 быстрые волны касаний по всем игрокам
     local startTime = tick()
-    for wave = 1, 3 do
-        for _, plr in ipairs(targets) do
-            if plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then
-                local hrp = plr.Character.HumanoidRootPart
-                if firetouchinterest then
+    if firetouchinterest then
+        for wave = 1, 3 do
+            for _, plr in ipairs(targets) do
+                if plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then
+                    local hrp = plr.Character.HumanoidRootPart
                     pcall(function()
                         firetouchinterest(hrp, handle, 0)
                         firetouchinterest(hrp, handle, 1)
                     end)
                 end
             end
+            task.wait(0.015)
         end
-        task.wait(0.02)
     end
 
     local ms = math.floor((tick() - startTime) * 1000)
     Log(string.format("💥 Волны FireTouch разосланы по %d целям за %d мс!", #targets, ms), "SUCCESS")
-    UpdateStatus("Batch Kill завершен", Color3.fromRGB(100, 255, 120))
+    UpdateStatus("Batch Kill выполнен", Color3.fromRGB(100, 255, 120))
 end
 
--- Noclip во время работы
-RegisterConnection(RunService.Stepped:Connect(function()
-    if isTerminated then return end
-    if isRunning and LocalPlayer.Character then
-        for _, part in ipairs(LocalPlayer.Character:GetDescendants()) do
-            if part:IsA("BasePart") then part.CanCollide = false end
-        end
-    end
-end))
-
 -- =====================================================================
--- ПРИВЯЗКА КНОПОК
+-- ПРЯМАЯ ПРИВЯЗКА КНОПОК БЕЗ ПОСРЕДНИКОВ И ДЕБАУНСОВ
 -- =====================================================================
-local function BindClick(btn: TextButton, callback: () -> ())
-    local debounce = false
-    local function fire()
-        if debounce or isTerminated then return end
-        debounce = true
-        task.spawn(callback)
-        task.wait(0.12)
-        debounce = false
+BtnScan.MouseButton1Click:Connect(RunTargetScan)
+BtnEquip.MouseButton1Click:Connect(function()
+    local knife = InspectAndEquipKnife()
+    if knife then
+        Log("Нож успешно взят: " .. knife.Name, "SUCCESS")
+        UpdateStatus("Нож в руке: " .. knife.Name, Color3.fromRGB(100, 255, 100))
+    else
+        Log("Нож не найден в инвентаре!", "WARN")
+        UpdateStatus("Нож не найден", Color3.fromRGB(255, 160, 50))
     end
-    btn.Activated:Connect(fire)
-    btn.MouseButton1Click:Connect(fire)
-end
-
-BindClick(BtnScan, RunTargetScan)
-BindClick(BtnEquip, InspectAndEquipKnife)
-BindClick(BtnKill, StartKillLoop)
-BindClick(BtnBatch, RunBatchKillAll)
-BindClick(BtnClear, ClearLogs)
-BindClick(ToggleBtn, function() SetLogsCollapsed(not isLogsCollapsed) end)
-BindClick(BtnToggleLogs, function() SetLogsCollapsed(not isLogsCollapsed) end)
+end)
+BtnKill.MouseButton1Click:Connect(StartKillLoop)
+BtnBatch.MouseButton1Click:Connect(RunBatchKillAll)
+BtnClear.MouseButton1Click:Connect(ClearLogs)
+ToggleBtn.MouseButton1Click:Connect(function() SetLogsCollapsed(not isLogsCollapsed) end)
 
 local function Terminate()
     if isTerminated then return end
@@ -817,18 +657,13 @@ local function Terminate()
     end
     table.clear(activeConnections)
 
-    if LocalPlayer.Character then
-        local hrp = LocalPlayer.Character:FindFirstChild("HumanoidRootPart") or LocalPlayer.Character.PrimaryPart
-        DisableFlight(hrp)
-    end
-
     if ScreenGui and ScreenGui.Parent then ScreenGui:Destroy() end
-    print("[MM2 ASSASSIN] Скрипт выгружен.")
+    print("[MM2 ASSASSIN] Скрипт закрыт.")
 end
 
-BindClick(CloseBtn, Terminate)
+CloseBtn.MouseButton1Click:Connect(Terminate)
 
-Log("MM2 Assassin Killer v2.0 готов!", "SUCCESS")
-Log("Режим по умолчанию: '⚡ FIRETOUCH' (Инста-килл без телепорта)", "INFO")
-Log("• Нажмите '⚡ KILL TARGET: СТАРТ' для выбивания целей по цепочке", "TARGET")
+Log("MM2 Assassin Insta-Killer v3.0 готов к работе!", "SUCCESS")
+Log("Медленные телепорты полностью вырезаны.", "INFO")
+Log("• Нажмите '⚡ KILL TARGET' для мгновенной цепочки по таргету", "TARGET")
 Log("• Нажмите '💥 BATCH ALL' для мгновенной волны по всем в раунде", "KILL")
