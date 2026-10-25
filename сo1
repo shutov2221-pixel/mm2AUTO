@@ -1,9 +1,10 @@
---!strict
 -- =====================================================================
 -- MM2 COIN PICKUP BENCHMARK & DIAGNOSTIC LOGGER
 -- Точный замер и сравнение скорости всех детектов подбора монет в игре.
 -- Собирайте монеты вручную и смотрите в GUI, какой детект срабатывает первее всех.
 -- =====================================================================
+
+print("[MM2 Coin Log] Запуск скрипта...")
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -12,50 +13,45 @@ local RunService = game:GetService("RunService")
 while not Players.LocalPlayer do task.wait(0.1) end
 local LocalPlayer = Players.LocalPlayer
 
--- Служебные переменные
 local IsTerminated = false
-local ActiveConnections: { RBXScriptConnection } = {}
+local ActiveConnections = {}
 
-local function RegisterConnection(conn: RBXScriptConnection): RBXScriptConnection
+local function RegisterConnection(conn)
     table.insert(ActiveConnections, conn)
     return conn
 end
 
+local function BindClick(guiElement, callback)
+    local debounce = false
+    local function fire()
+        if debounce or IsTerminated then return end
+        debounce = true
+        task.spawn(callback)
+        task.wait(0.15)
+        debounce = false
+    end
+    guiElement.Activated:Connect(fire)
+    guiElement.MouseButton1Click:Connect(fire)
+    guiElement.TouchTap:Connect(fire)
+end
+
 -- =====================================================================
--- ПОИСК БЕЗОПАСНОГО РОДИТЕЛЯ GUI
+-- ПОИСК БЕЗОПАСНОГО РОДИТЕЛЯ GUI (ИДЕНТИЧНО M4.LUA)
 -- =====================================================================
-local function SafeParentGui(gui: ScreenGui, guiName: string)
-    local function cleanOld(parent: Instance?)
-        if parent then
-            local old = parent:FindFirstChild(guiName)
-            if old and old ~= gui then
-                pcall(function() old:Destroy() end)
-            end
-        end
-    end
+local function GetSafeGuiParent()
+    local success, result = pcall(function() return gethui() end)
+    if success and result then return result end
+    local coreSuccess, coreResult = pcall(function() return game:GetService("CoreGui") end)
+    if coreSuccess and coreResult then return coreResult end
+    return LocalPlayer:WaitForChild("PlayerGui")
+end
 
-    -- 1. Проверяем gethui()
-    local okHui, hui = pcall(function() return gethui and gethui() end)
-    if okHui and typeof(hui) == "Instance" then
-        cleanOld(hui)
-        local okP = pcall(function() gui.Parent = hui end)
-        if okP and gui.Parent == hui then return end
-    end
+local safeParent = GetSafeGuiParent()
 
-    -- 2. Проверяем CoreGui через pcall реального присвоения (не крашит если нет прав)
-    local okCore, core = pcall(function() return game:GetService("CoreGui") end)
-    if okCore and typeof(core) == "Instance" then
-        cleanOld(core)
-        local okP = pcall(function() gui.Parent = core end)
-        if okP and gui.Parent == core then return end
-    end
-
-    -- 3. Безотказный PlayerGui
-    local pGui = LocalPlayer:FindFirstChildOfClass("PlayerGui") or LocalPlayer:WaitForChild("PlayerGui", 5)
-    if pGui then
-        cleanOld(pGui)
-        pcall(function() gui.Parent = pGui end)
-    end
+-- Удаление старой версии GUI при повторном запуске
+local oldGui = safeParent:FindFirstChild("MM2_CoinLog_Gui")
+if oldGui then
+    pcall(function() oldGui:Destroy() end)
 end
 
 -- =====================================================================
@@ -63,18 +59,16 @@ end
 -- =====================================================================
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "MM2_CoinLog_Gui"
+ScreenGui.Parent = safeParent
 ScreenGui.ResetOnSpawn = false
-ScreenGui.DisplayOrder = 9999
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
-SafeParentGui(ScreenGui, "MM2_CoinLog_Gui")
 
-local UI_SCALE = 0.65 -- Компактный размер для удобства ручной игры
+local UI_SCALE = 0.65
 
 local MainFrame = Instance.new("Frame", ScreenGui)
 MainFrame.Name = "MainFrame"
-MainFrame.Size = UDim2.new(0, 480, 0, 420)
-MainFrame.AnchorPoint = Vector2.new(0, 0.5)
-MainFrame.Position = UDim2.new(0, 20, 0.5, 0) -- Слева на экране, не мешает обзору
+MainFrame.Size = UDim2.new(0, 360, 0, 340)
+MainFrame.Position = UDim2.new(0.5, -180, 0.35, -150)
 MainFrame.BackgroundColor3 = Color3.fromRGB(22, 22, 28)
 MainFrame.BorderSizePixel = 0
 MainFrame.ClipsDescendants = true
@@ -119,6 +113,7 @@ ClearBtn.TextColor3 = Color3.new(1, 1, 1)
 ClearBtn.Font = Enum.Font.GothamBold
 ClearBtn.TextSize = 12
 ClearBtn.Active = true
+ClearBtn.ZIndex = 15
 Instance.new("UICorner", ClearBtn).CornerRadius = UDim.new(0, 4)
 
 local CloseBtn = Instance.new("TextButton", TitleBar)
@@ -131,6 +126,7 @@ CloseBtn.TextColor3 = Color3.new(1, 1, 1)
 CloseBtn.Font = Enum.Font.GothamBold
 CloseBtn.TextSize = 12
 CloseBtn.Active = true
+CloseBtn.ZIndex = 15
 Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 4)
 
 -- Перетаскивание окна
@@ -165,7 +161,7 @@ end))
 
 -- Сводная панель статистики (Leaderboard побед)
 local SummaryPanel = Instance.new("Frame", MainFrame)
-SummaryPanel.Size = UDim2.new(1, -16, 0, 80)
+SummaryPanel.Size = UDim2.new(1, -16, 0, 68)
 SummaryPanel.Position = UDim2.new(0, 8, 0, 40)
 SummaryPanel.BackgroundColor3 = Color3.fromRGB(28, 28, 36)
 Instance.new("UICorner", SummaryPanel).CornerRadius = UDim.new(0, 6)
@@ -179,13 +175,12 @@ SummaryText.Font = Enum.Font.Gotham
 SummaryText.TextSize = 11
 SummaryText.TextXAlignment = Enum.TextXAlignment.Left
 SummaryText.TextYAlignment = Enum.TextYAlignment.Top
-SummaryText.Text = "Подберите монету в игре для начала замера...\n" ..
-                   "Ожидание карты и монет..."
+SummaryText.Text = "Подберите монету в игре для начала замера...\nОжидание карты и монет..."
 
 -- Контейнер скролла логов
 local ScrollContainer = Instance.new("ScrollingFrame", MainFrame)
-ScrollContainer.Size = UDim2.new(1, -16, 1, -155)
-ScrollContainer.Position = UDim2.new(0, 8, 0, 126)
+ScrollContainer.Size = UDim2.new(1, -16, 1, -140)
+ScrollContainer.Position = UDim2.new(0, 8, 0, 114)
 ScrollContainer.BackgroundColor3 = Color3.fromRGB(16, 16, 22)
 ScrollContainer.BorderSizePixel = 0
 ScrollContainer.ScrollBarThickness = 5
@@ -206,8 +201,8 @@ ScrollPadding.PaddingRight = UDim.new(0, 6)
 
 -- Подвал состояния
 local StatusBar = Instance.new("Frame", MainFrame)
-StatusBar.Size = UDim2.new(1, 0, 0, 24)
-StatusBar.Position = UDim2.new(0, 0, 1, -24)
+StatusBar.Size = UDim2.new(1, 0, 0, 22)
+StatusBar.Position = UDim2.new(0, 0, 1, -22)
 StatusBar.BackgroundColor3 = Color3.fromRGB(14, 14, 18)
 StatusBar.BorderSizePixel = 0
 
@@ -221,20 +216,11 @@ StatusLabel.Font = Enum.Font.Gotham
 StatusLabel.TextSize = 11
 StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
 
+print("[MM2 Coin Log] GUI успешно создан!")
+
 -- =====================================================================
 -- ЛОГИКА ЗАМЕРОВ ДЕТЕКТОВ МОНЕТ
 -- =====================================================================
-
-type DetectionRecord = {
-    CoinName: string,
-    TouchTime: number?,
-    Events: { [string]: number },
-    FirstEventTime: number?,
-    Order: { { Name: string, Time: number, DiffMs: number } },
-    CardCreated: boolean
-}
-
--- Общий счетчик побед каждого детекта
 local WinStats = {
     ["TouchTransmitter Removed"] = 0,
     ["Coin.Parent == nil"] = 0,
@@ -244,15 +230,13 @@ local WinStats = {
 }
 
 local TotalCoinsTested = 0
-local ActiveCoinRecords: { [Instance]: DetectionRecord } = {}
-local RecentCoinsByTime: { { Time: number, Record: DetectionRecord } } = {}
+local ActiveCoinRecords = {}
+local RecentCoinsByTime = {}
 
-local function UpdateSummaryDisplay(mapName: string, activeCoinsCount: number)
+local function UpdateSummaryDisplay(mapName, activeCoinsCount)
     local lines = {}
-    table.insert(lines, string.format("Карта: %s | Активных монет: %d | Протестировано: %d", mapName ~= "" and mapName or "Не найдена", activeCoinsCount, TotalCoinsTested))
-    table.insert(lines, "Рейтинг скорости (кто сработал ПЕРВЫМ):")
-
-    -- Сортировка по количеству побед
+    table.insert(lines, string.format("Карта: %s | Монет: %d | Тестов: %d", mapName ~= "" and mapName or "Нет", activeCoinsCount, TotalCoinsTested))
+    
     local sorted = {}
     for name, wins in pairs(WinStats) do
         table.insert(sorted, { Name = name, Wins = wins })
@@ -262,15 +246,14 @@ local function UpdateSummaryDisplay(mapName: string, activeCoinsCount: number)
     local parts = {}
     for i, item in ipairs(sorted) do
         local medal = (i == 1 and "🥇" or (i == 2 and "🥈" or (i == 3 and "🥉" or "  ")))
-        table.insert(parts, string.format("%s %-25s : %d", medal, item.Name, item.Wins))
+        table.insert(parts, string.format("%s %s: %d", medal, item.Name, item.Wins))
     end
 
-    table.insert(lines, table.concat(parts, "  |  "))
+    table.insert(lines, table.concat(parts, " | "))
     SummaryText.Text = table.concat(lines, "\n")
 end
 
--- Добавление карточки монеты в скролл-лог
-local function AddLogCard(rec: DetectionRecord)
+local function AddLogCard(rec)
     if rec.CardCreated then return end
     rec.CardCreated = true
 
@@ -299,7 +282,7 @@ local function AddLogCard(rec: DetectionRecord)
 
     local winner = rec.Order[1]
     local winnerName = winner and winner.Name or "Нет данных"
-    Header.Text = string.format("🪙 Монета #%d (%s) — Победитель: %s", TotalCoinsTested, rec.CoinName, winnerName)
+    Header.Text = string.format("🪙 Монета #%d (%s) -> 🥇 %s", TotalCoinsTested, rec.CoinName, winnerName)
     Header.TextColor3 = Color3.fromRGB(255, 215, 0)
 
     for i, ev in ipairs(rec.Order) do
@@ -310,8 +293,8 @@ local function AddLogCard(rec: DetectionRecord)
         line.TextSize = 10
         line.TextXAlignment = Enum.TextXAlignment.Left
 
-        local medal = (i == 1 and "🥇 1-е место:" or (i == 2 and "🥈 2-е место:" or (i == 3 and "🥉 3-е место:" or string.format("   %d-е место:", i))))
-        local delayStr = (i == 1) and "+0.00 ms (БЫСТРЕЙШИЙ)" or string.format("+%.2f ms", ev.DiffMs)
+        local medal = (i == 1 and "🥇 1-е:" or (i == 2 and "🥈 2-е:" or (i == 3 and "🥉 3-е:" or string.format("   %d-е:", i))))
+        local delayStr = (i == 1) and "+0.00 ms (Победитель)" or string.format("+%.2f ms", ev.DiffMs)
 
         if i == 1 then
             line.TextColor3 = Color3.fromRGB(100, 255, 120)
@@ -319,20 +302,17 @@ local function AddLogCard(rec: DetectionRecord)
             line.TextColor3 = Color3.fromRGB(200, 200, 210)
         end
 
-        line.Text = string.format("%s %-26s [%s]", medal, ev.Name, delayStr)
+        line.Text = string.format("%s %-25s [%s]", medal, ev.Name, delayStr)
     end
 
-    -- Авто-скролл вниз к новым событиям
     task.defer(function()
         ScrollContainer.CanvasPosition = Vector2.new(0, 999999)
     end)
 end
 
--- Обработка завершения замера по конкретной монете
-local function FinalizeCoinRecord(coin: Instance, rec: DetectionRecord)
+local function FinalizeCoinRecord(coin, rec)
     if rec.CardCreated then return end
 
-    -- Собираем и сортируем все события этой монеты по времени
     local list = {}
     for name, t in pairs(rec.Events) do
         table.insert(list, { Name = name, Time = t })
@@ -349,7 +329,6 @@ local function FinalizeCoinRecord(coin: Instance, rec: DetectionRecord)
     rec.Order = list
     TotalCoinsTested = TotalCoinsTested + 1
 
-    -- Засчитываем победу
     local winner = list[1].Name
     if WinStats[winner] ~= nil then
         WinStats[winner] = WinStats[winner] + 1
@@ -359,7 +338,7 @@ local function FinalizeCoinRecord(coin: Instance, rec: DetectionRecord)
     ActiveCoinRecords[coin] = nil
 end
 
-local function RecordCoinEvent(coin: Instance, eventName: string)
+local function RecordCoinEvent(coin, eventName)
     local now = os.clock()
     local rec = ActiveCoinRecords[coin]
     if not rec then
@@ -377,7 +356,6 @@ local function RecordCoinEvent(coin: Instance, eventName: string)
         rec.Events[eventName] = now
     end
 
-    -- Тайм-аут на сбор остальных возможных событий этой же монеты (0.25 сек)
     task.delay(0.25, function()
         if not IsTerminated and not rec.CardCreated then
             FinalizeCoinRecord(coin, rec)
@@ -393,12 +371,11 @@ local function SetupBagWatcher()
         local playerGui = LocalPlayer:WaitForChild("PlayerGui", 15)
         if not playerGui then return end
 
-        local function hookCoinsLabel(label: TextLabel)
+        local function hookCoinsLabel(label)
             RegisterConnection(label:GetPropertyChangedSignal("Text"):Connect(function()
                 if IsTerminated then return end
                 local now = os.clock()
 
-                -- Находим самую недавнюю монету, которая сейчас фиксирует события
                 for i = #RecentCoinsByTime, 1, -1 do
                     local entry = RecentCoinsByTime[i]
                     if (now - entry.Time) < 1.0 and not entry.Record.CardCreated then
@@ -411,7 +388,7 @@ local function SetupBagWatcher()
             end))
         end
 
-        local function scanGui(gui: Instance)
+        local function scanGui(gui)
             for _, desc in ipairs(gui:GetDescendants()) do
                 if desc:IsA("TextLabel") and desc.Name == "Coins" and desc.Parent and desc.Parent.Name == "Icon" then
                     hookCoinsLabel(desc)
@@ -437,7 +414,7 @@ SetupBagWatcher()
 -- =====================================================================
 -- ПОИСК КАРТЫ И ПОДКЛЮЧЕНИЕ СЛУШАТЕЛЕЙ К МОНЕТАМ
 -- =====================================================================
-local function FindCurrentMap(): Instance?
+local function FindCurrentMap()
     for _, v in ipairs(Workspace:GetChildren()) do
         if v:FindFirstChild("CoinContainer") then
             return v
@@ -446,9 +423,9 @@ local function FindCurrentMap(): Instance?
     return nil
 end
 
-local ActiveCoinTransmitters: { [Instance]: RBXScriptConnection } = {}
+local ActiveCoinTransmitters = {}
 
-local function HookCoin(coinPart: BasePart, container: Instance)
+local function HookCoin(coinPart, container)
     if not coinPart or not coinPart:IsA("BasePart") then return end
 
     -- 1. Детект: Изменение Transparency
@@ -459,7 +436,7 @@ local function HookCoin(coinPart: BasePart, container: Instance)
         end
     end))
 
-    -- 2. Детект: Coin.Parent == nil / сменился родитель
+    -- 2. Детект: Coin.Parent == nil
     RegisterConnection(coinPart.AncestryChanged:Connect(function(_, parent)
         if IsTerminated then return end
         if parent == nil or not coinPart:IsDescendantOf(Workspace) then
@@ -485,7 +462,7 @@ local function HookCoin(coinPart: BasePart, container: Instance)
         end
     end))
 
-    -- 4. Фиксация физического касания нашим персонажем (для сравнения задержки сервера)
+    -- 4. Фиксация физического касания нашим персонажем
     RegisterConnection(coinPart.Touched:Connect(function(hit)
         if IsTerminated then return end
         local myChar = LocalPlayer.Character
@@ -500,8 +477,8 @@ end
 
 -- Основной цикл отслеживания карты и монет
 task.spawn(function()
-    local lastMap: Instance? = nil
-    local containerConn: RBXScriptConnection? = nil
+    local lastMap = nil
+    local containerConn = nil
 
     while not IsTerminated do
         local map = FindCurrentMap()
@@ -528,14 +505,13 @@ task.spawn(function()
                 StatusLabel.TextColor3 = Color3.fromRGB(100, 255, 120)
             end
 
-            -- Подключаем слушатели ко всем монетам
             local coinsCount = 0
             for _, desc in ipairs(container:GetDescendants()) do
                 if desc:IsA("TouchTransmitter") and desc.Parent and desc.Parent:IsA("BasePart") then
                     coinsCount = coinsCount + 1
                     local part = desc.Parent
                     if not ActiveCoinTransmitters[part] then
-                        ActiveCoinTransmitters[part] = desc.AncestryChanged
+                        ActiveCoinTransmitters[part] = true
                         HookCoin(part, container)
                     end
                 end
@@ -554,7 +530,7 @@ task.spawn(function()
 end)
 
 -- Очистка лога
-ClearBtn.MouseButton1Click:Connect(function()
+BindClick(ClearBtn, function()
     for _, child in ipairs(ScrollContainer:GetChildren()) do
         if child:IsA("Frame") then child:Destroy() end
     end
@@ -566,7 +542,7 @@ ClearBtn.MouseButton1Click:Connect(function()
 end)
 
 -- Завершение работы
-CloseBtn.MouseButton1Click:Connect(function()
+BindClick(CloseBtn, function()
     IsTerminated = true
     for _, c in ipairs(ActiveConnections) do
         if c and c.Connected then pcall(function() c:Disconnect() end) end
