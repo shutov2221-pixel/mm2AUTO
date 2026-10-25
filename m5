@@ -96,8 +96,9 @@ rt.player = LocalPlayer
 rt.coinContainer = nil
 rt.touchedCoins = {}       
 rt.cachedCoins = {}
-rt.potatoConnections = setmetatable({}, { __mode = "v" })
-rt.coinRemovedConn = nil   
+rt.potatoConnections = {}
+rt.coinRemovedConn = nil
+rt.ancestryConn = nil   
 rt.cachedBodyParts = {}    
 
 local State = {
@@ -162,6 +163,21 @@ local function AutoFarmCleanUp()
     if rt.coinRemovedConn then
         rt.coinRemovedConn:Disconnect()
         rt.coinRemovedConn = nil
+    end
+    if rt.ancestryConn then
+        rt.ancestryConn:Disconnect()
+        rt.ancestryConn = nil
+    end
+
+    -- Очищаем ссылку на старый контейнер карты
+    rt.coinContainer = nil
+
+    -- Безопасная очистка отключенных соединений из таблицы ActiveConnections
+    for i = #ActiveConnections, 1, -1 do
+        local conn = ActiveConnections[i]
+        if not conn or not conn.Connected then
+            table.remove(ActiveConnections, i)
+        end
     end
 end
 
@@ -1395,19 +1411,38 @@ local function applyPotatoMode()
         if #rt.potatoConnections == 0 then
             table.insert(rt.potatoConnections, Workspace.ChildAdded:Connect(function(child)
                 if not SETTINGS.PotatoMode or IsTerminated then return end
+
+                -- Игнорируем персонажей игроков
                 if Players:GetPlayerFromCharacter(child) or child:FindFirstChildOfClass("Humanoid") then
                     return
                 end
-                task.wait(0.1)
-                if Players:GetPlayerFromCharacter(child) or child:FindFirstChildOfClass("Humanoid") then
+
+                -- Если это одиночная деталь - применяем сразу без GetDescendants
+                if child:IsA("BasePart") or EffectsToDestroy[child.ClassName] then
+                    makePartPotato(child)
                     return
                 end
-                for _, v in ipairs(child:GetDescendants()) do makePartPotato(v) end
+
+                -- Если это папка или модель (например, новая карта)
+                if child:IsA("Model") or child:IsA("Folder") then
+                    task.wait(0.2)
+                    if not SETTINGS.PotatoMode or IsTerminated then return end
+                    if Players:GetPlayerFromCharacter(child) or child:FindFirstChildOfClass("Humanoid") then
+                        return
+                    end
+                    makePartPotato(child)
+                    for _, v in ipairs(child:GetDescendants()) do
+                        makePartPotato(v)
+                    end
+                end
             end))
+
             table.insert(rt.potatoConnections, Lighting.ChildAdded:Connect(function(child)
                 if not SETTINGS.PotatoMode or IsTerminated then return end
-                task.wait(0.1)
-                for _, v in ipairs(child:GetDescendants()) do makePartPotato(v) end
+                makePartPotato(child)
+                for _, v in ipairs(child:GetDescendants()) do
+                    makePartPotato(v)
+                end
             end))
         end
     else
@@ -1581,14 +1616,19 @@ local function CollectCoins()
         PopulateCoins()
 
         if rt.coinContainer then
-            local ancestryConn
-            ancestryConn = rt.coinContainer.AncestryChanged:Connect(function(_, parent)
+            if rt.ancestryConn then
+                rt.ancestryConn:Disconnect()
+                rt.ancestryConn = nil
+            end
+            rt.ancestryConn = rt.coinContainer.AncestryChanged:Connect(function(_, parent)
                 if not parent then
                     rt.coinContainer = nil
-                    if ancestryConn then ancestryConn:Disconnect() end
+                    if rt.ancestryConn then
+                        rt.ancestryConn:Disconnect()
+                        rt.ancestryConn = nil
+                    end
                 end
             end)
-            RegisterConnection(ancestryConn)
         end
     end
 
