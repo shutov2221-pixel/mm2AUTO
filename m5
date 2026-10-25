@@ -1,11 +1,12 @@
 --!strict
 -- =====================================================================
--- MM2 AUTO-FARM & ASSASSIN KILLER [MODERNIZED TURBO HYBRID]
--- 1. Режимы зачистки: С ТВИНКОМ (остановка на твинке) / СОЛО (остановка при 2 игроках).
--- 2. TurboKill: Двойной импульс touchinterest по хитбоксу без телепортов и зависаний.
--- 3. Реактивный перехват ChangeTarget и RoundEndFade (0 мс задержки) + UI Watchdog.
--- 4. Переключатель действия при полной сумке: РЕСЕТ / KILL ALL.
--- 5. Авто-сохранение ника твинка в mm2_farm_exception.txt.
+-- MM2 AUTO-FARM & ASSASSIN / CLASSIC HYBRID [MODERNIZED TURBO HYBRID]
+-- 1. Режимы игры: ASSASSIN (зачистка таргетов) / CLASSIC (только фарм + ресет).
+-- 2. Режимы зачистки в Assassin: С ТВИНКОМ (стоп на твинке) / СОЛО (стоп при 2 игроках).
+-- 3. TurboKill: Двойной импульс touchinterest по хитбоксу без телепортов и зависаний.
+-- 4. Реактивный перехват ChangeTarget и RoundEndFade (0 мс задержки) + UI Watchdog.
+-- 5. Действие при полной сумке: РЕСЕТ / KILL ALL (в Assassin). В Classic — всегда РЕСЕТ.
+-- 6. Авто-сохранение ника твинка в mm2_farm_exception.txt.
 -- =====================================================================
 
 -- === СОХРАНЕНИЕ / ЗАГРУЗКА ИСКЛЮЧЕНИЯ (ТВИНКА) ===
@@ -47,7 +48,9 @@ local SETTINGS = {
     FpsCap = 20,
     PotatoMode = false,
     BagFullMode = "Reset", -- "Reset" | "KillAll"
-    GameMode = (initialSavedTwin ~= "" and "Twin" or "Solo"), -- "Twin" | "Solo"
+    GameType = "Assassin", -- "Assassin" | "Classic"
+    TargetMode = (initialSavedTwin ~= "" and "Twin" or "Solo"), -- "Twin" | "Solo"
+    GameMode = (initialSavedTwin ~= "" and "Twin" or "Solo"), -- Совместимость
     TwinName = initialSavedTwin,
     UnderfloorOffset = 3.8 -- Смещение под карту (студы ниже монеты)
 }
@@ -680,7 +683,7 @@ local function PreRoundKillChain()
         return
     end
 
-    UpdateStatus("Зачистка: Старт цепочки (" .. (SETTINGS.GameMode == "Twin" and "С Твинком" or "Соло") .. ")", Color3.fromRGB(255, 180, 50))
+    UpdateStatus("Зачистка: Старт цепочки (" .. (SETTINGS.TargetMode == "Twin" and "С Твинком" or "Соло") .. ")", Color3.fromRGB(255, 180, 50))
 
     local isChainRunning = true
     local activeTargetPlayer: Player? = nil
@@ -700,7 +703,7 @@ local function PreRoundKillChain()
         if not hum or hum.Health <= 0 then return end
 
         -- 1. Проверка режима "С ТВИНКОМ": если цель Твинк — зачистка моментально останавливается!
-        if SETTINGS.GameMode == "Twin" and IsTwinPlayer(plr, rawName) then
+        if SETTINGS.TargetMode == "Twin" and IsTwinPlayer(plr, rawName) then
             UpdateStatus("Зачистка: Цель — Твинк (" .. plr.DisplayName .. ")! Стоп.", Color3.fromRGB(100, 255, 120))
             isChainRunning = false
             return
@@ -710,14 +713,14 @@ local function PreRoundKillChain()
         local aliveCount = CountAliveRoundPlayers()
 
         -- Режим "СОЛО": если в раунде осталось 2 игрока (я + 1 соперник) — цель убивать нельзя!
-        if SETTINGS.GameMode == "Solo" and aliveCount <= 2 then
+        if SETTINGS.TargetMode == "Solo" and aliveCount <= 2 then
             UpdateStatus("Зачистка: Осталось 2 игрока (я + соперник). Стоп.", Color3.fromRGB(100, 255, 120))
             isChainRunning = false
             return
         end
 
         -- Резервная защита для режима с твинком
-        if SETTINGS.GameMode == "Twin" and aliveCount <= 2 then
+        if SETTINGS.TargetMode == "Twin" and aliveCount <= 2 then
             UpdateStatus("Зачистка: Осталось 2 игрока (я + твинк). Стоп.", Color3.fromRGB(100, 255, 120))
             isChainRunning = false
             return
@@ -808,7 +811,7 @@ local function PreRoundKillChain()
         if activeTargetPlayer and activeTargetPlayer.Character then
             local tHum = activeTargetPlayer.Character:FindFirstChildOfClass("Humanoid")
             if tHum and tHum.Health > 0 then
-                if SETTINGS.GameMode == "Twin" and IsTwinPlayer(activeTargetPlayer, activeTargetName) then
+                if SETTINGS.TargetMode == "Twin" and IsTwinPlayer(activeTargetPlayer, activeTargetName) then
                     UpdateStatus("Зачистка: Цель — Твинк. Стоп.", Color3.fromRGB(100, 255, 120))
                     break
                 end
@@ -1068,8 +1071,9 @@ local function setTargetFps(fps: number): boolean
     return false
 end
 
-local function CreateControlRow(parent, labelText, defaultVal, minVal, maxVal, step, callback)
+local function CreateControlRow(parent, labelText, defaultVal, minVal, maxVal, step, order, callback)
     local Row = Instance.new("Frame", parent)
+    Row.LayoutOrder = order or 1
     Row.Size = UDim2.new(1, 0, 0, 38)
     Row.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
     Instance.new("UICorner", Row).CornerRadius = UDim.new(0, 6)
@@ -1123,13 +1127,14 @@ local function CreateControlRow(parent, labelText, defaultVal, minVal, maxVal, s
     end)
 end
 
-CreateControlRow(SettingsContainer, "СКОРОСТЬ", SETTINGS.Speed, 10, 100, 1, function(val) SETTINGS.Speed = val end)
-CreateControlRow(SettingsContainer, "FPS CAP", SETTINGS.FpsCap, 6, 60, 2, function(val)
+CreateControlRow(SettingsContainer, "СКОРОСТЬ", SETTINGS.Speed, 10, 100, 1, 1, function(val) SETTINGS.Speed = val end)
+CreateControlRow(SettingsContainer, "FPS CAP", SETTINGS.FpsCap, 6, 60, 2, 2, function(val)
     SETTINGS.FpsCap = val
     if SETTINGS.PotatoMode then setTargetFps(val) end
 end)
 
 local PotatoBtn = Instance.new("TextButton", SettingsContainer)
+PotatoBtn.LayoutOrder = 3
 PotatoBtn.Size = UDim2.new(1, 0, 0, 35)
 PotatoBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
 PotatoBtn.Text = "POTATO MODE: OFF"
@@ -1140,8 +1145,22 @@ PotatoBtn.Active = true
 PotatoBtn.ZIndex = 10
 Instance.new("UICorner", PotatoBtn).CornerRadius = UDim.new(0, 6)
 
--- Кнопка действия при полной сумке: РЕСЕТ / KILL ALL
+-- Кнопка переключения режима игры: ASSASSIN / CLASSIC
+local GameTypeBtn = Instance.new("TextButton", SettingsContainer)
+GameTypeBtn.LayoutOrder = 4
+GameTypeBtn.Size = UDim2.new(1, 0, 0, 35)
+GameTypeBtn.BackgroundColor3 = (SETTINGS.GameType == "Classic") and Color3.fromRGB(45, 140, 95) or Color3.fromRGB(130, 45, 220)
+GameTypeBtn.Text = (SETTINGS.GameType == "Classic") and "РЕЖИМ: CLASSIC" or "РЕЖИМ: ASSASSIN"
+GameTypeBtn.TextColor3 = Color3.new(1, 1, 1)
+GameTypeBtn.Font = Enum.Font.GothamSemibold
+GameTypeBtn.TextSize = 13
+GameTypeBtn.Active = true
+GameTypeBtn.ZIndex = 10
+Instance.new("UICorner", GameTypeBtn).CornerRadius = UDim.new(0, 6)
+
+-- Кнопка действия при полной сумке: РЕСЕТ / KILL ALL (только в Assassin)
 local BagModeBtn = Instance.new("TextButton", SettingsContainer)
+BagModeBtn.LayoutOrder = 5
 BagModeBtn.Size = UDim2.new(1, 0, 0, 35)
 BagModeBtn.BackgroundColor3 = (SETTINGS.BagFullMode == "KillAll") and Color3.fromRGB(180, 40, 40) or Color3.fromRGB(60, 60, 70)
 BagModeBtn.Text = (SETTINGS.BagFullMode == "KillAll") and "СУМКА: KILL ALL" or "СУМКА: РЕСЕТ"
@@ -1152,24 +1171,26 @@ BagModeBtn.Active = true
 BagModeBtn.ZIndex = 10
 Instance.new("UICorner", BagModeBtn).CornerRadius = UDim.new(0, 6)
 
--- Кнопка переключения режима зачистки: С ТВИНКОМ / СОЛО
-local GameModeBtn = Instance.new("TextButton", SettingsContainer)
-GameModeBtn.Size = UDim2.new(1, 0, 0, 35)
-GameModeBtn.BackgroundColor3 = (SETTINGS.GameMode == "Twin") and Color3.fromRGB(45, 125, 245) or Color3.fromRGB(60, 60, 70)
-GameModeBtn.Text = (SETTINGS.GameMode == "Twin") and "РЕЖИМ: С ТВИНКОМ" or "РЕЖИМ: СОЛО"
-GameModeBtn.TextColor3 = Color3.new(1, 1, 1)
-GameModeBtn.Font = Enum.Font.GothamSemibold
-GameModeBtn.TextSize = 13
-GameModeBtn.Active = true
-GameModeBtn.ZIndex = 10
-Instance.new("UICorner", GameModeBtn).CornerRadius = UDim.new(0, 6)
+-- Кнопка переключения режима зачистки: С ТВИНКОМ / СОЛО (только в Assassin)
+local TargetModeBtn = Instance.new("TextButton", SettingsContainer)
+TargetModeBtn.LayoutOrder = 6
+TargetModeBtn.Size = UDim2.new(1, 0, 0, 35)
+TargetModeBtn.BackgroundColor3 = (SETTINGS.TargetMode == "Twin") and Color3.fromRGB(45, 125, 245) or Color3.fromRGB(60, 60, 70)
+TargetModeBtn.Text = (SETTINGS.TargetMode == "Twin") and "ЗАЧИСТКА: С ТВИНКОМ" or "ЗАЧИСТКА: СОЛО"
+TargetModeBtn.TextColor3 = Color3.new(1, 1, 1)
+TargetModeBtn.Font = Enum.Font.GothamSemibold
+TargetModeBtn.TextSize = 13
+TargetModeBtn.Active = true
+TargetModeBtn.ZIndex = 10
+Instance.new("UICorner", TargetModeBtn).CornerRadius = UDim.new(0, 6)
 
 -- Контейнер ввода ника твинка + кнопка сохранения
 local TwinContainer = Instance.new("Frame", SettingsContainer)
 TwinContainer.Name = "TwinContainer"
+TwinContainer.LayoutOrder = 7
 TwinContainer.Size = UDim2.new(1, 0, 0, 35)
 TwinContainer.BackgroundTransparency = 1
-TwinContainer.Visible = (SETTINGS.GameMode == "Twin")
+TwinContainer.Visible = (SETTINGS.GameType == "Assassin" and SETTINGS.TargetMode == "Twin")
 
 local TwinTextBox = Instance.new("TextBox", TwinContainer)
 TwinTextBox.Name = "TwinTextBox"
@@ -1224,12 +1245,21 @@ end
 -- Динамическое обновление размеров GUI
 local function UpdateGuiSizes()
     local isStats = StatsPanel.Visible
-    local isTwin = (SETTINGS.GameMode == "Twin")
+    local isClassic = (SETTINGS.GameType == "Classic")
+    local isTwin = (not isClassic) and (SETTINGS.TargetMode == "Twin")
 
+    BagModeBtn.Visible = not isClassic
+    TargetModeBtn.Visible = not isClassic
     TwinContainer.Visible = isTwin
 
     local settingsY = isStats and 155 or 85
-    local settingsH = isTwin and 245 or 205
+    local settingsH = 165
+    if not isClassic then
+        settingsH = settingsH + 80
+        if isTwin then
+            settingsH = settingsH + 40
+        end
+    end
 
     SettingsContainer.Position = UDim2.new(0, 8, 0, settingsY)
     SettingsContainer.Size = UDim2.new(1, -16, 0, settingsH)
@@ -1258,29 +1288,47 @@ TwinTextBox.FocusLost:Connect(function()
     SETTINGS.TwinName = string.gsub(name, "^%s*(.-)%s*$", "%1")
 end)
 
--- Переключение режима: С ТВИНКОМ / СОЛО
-BindClick(GameModeBtn, function()
-    if SETTINGS.GameMode == "Twin" then
-        SETTINGS.GameMode = "Solo"
-        GameModeBtn.Text = "РЕЖИМ: СОЛО"
-        GameModeBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
-        UpdateStatus("Режим: Соло (оставляем 1 соперника)", Color3.fromRGB(200, 200, 255))
+-- Переключение режима игры: ASSASSIN / CLASSIC
+BindClick(GameTypeBtn, function()
+    if SETTINGS.GameType == "Assassin" then
+        SETTINGS.GameType = "Classic"
+        GameTypeBtn.Text = "РЕЖИМ: CLASSIC"
+        GameTypeBtn.BackgroundColor3 = Color3.fromRGB(45, 140, 95)
+        UpdateStatus("Режим: Classic (зачистка выкл, авто-ресет при полной сумке)", Color3.fromRGB(100, 255, 150))
     else
-        SETTINGS.GameMode = "Twin"
-        GameModeBtn.Text = "РЕЖИМ: С ТВИНКОМ"
-        GameModeBtn.BackgroundColor3 = Color3.fromRGB(45, 125, 245)
-        UpdateStatus("Режим: С Твинком (твинк: " .. (SETTINGS.TwinName ~= "" and SETTINGS.TwinName or "не задан") .. ")", Color3.fromRGB(200, 200, 255))
+        SETTINGS.GameType = "Assassin"
+        GameTypeBtn.Text = "РЕЖИМ: ASSASSIN"
+        GameTypeBtn.BackgroundColor3 = Color3.fromRGB(130, 45, 220)
+        UpdateStatus("Режим: Assassin (активна зачистка таргетов)", Color3.fromRGB(200, 150, 255))
     end
     UpdateGuiSizes()
 end)
 
--- Переключение действия при полной сумке: РЕСЕТ / KILL ALL
+-- Переключение режима зачистки: С ТВИНКОМ / СОЛО (только для Assassin)
+BindClick(TargetModeBtn, function()
+    if SETTINGS.TargetMode == "Twin" then
+        SETTINGS.TargetMode = "Solo"
+        SETTINGS.GameMode = "Solo"
+        TargetModeBtn.Text = "ЗАЧИСТКА: СОЛО"
+        TargetModeBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
+        UpdateStatus("Зачистка: Соло (оставляем 1 соперника)", Color3.fromRGB(200, 200, 255))
+    else
+        SETTINGS.TargetMode = "Twin"
+        SETTINGS.GameMode = "Twin"
+        TargetModeBtn.Text = "ЗАЧИСТКА: С ТВИНКОМ"
+        TargetModeBtn.BackgroundColor3 = Color3.fromRGB(45, 125, 245)
+        UpdateStatus("Зачистка: С Твинком (твинк: " .. (SETTINGS.TwinName ~= "" and SETTINGS.TwinName or "не задан") .. ")", Color3.fromRGB(200, 200, 255))
+    end
+    UpdateGuiSizes()
+end)
+
+-- Переключение действия при полной сумке: РЕСЕТ / KILL ALL (только для Assassin)
 BindClick(BagModeBtn, function()
     if SETTINGS.BagFullMode == "Reset" then
         SETTINGS.BagFullMode = "KillAll"
         BagModeBtn.Text = "СУМКА: KILL ALL"
         BagModeBtn.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
-        UpdateStatus("Сумка полна: Kill All финальной цели", Color3.fromRGB(255, 80, 80))
+        UpdateStatus("Сумка полна: Kill All финальной цели (в Assassin)", Color3.fromRGB(255, 80, 80))
     else
         SETTINGS.BagFullMode = "Reset"
         BagModeBtn.Text = "СУМКА: РЕСЕТ"
@@ -1697,8 +1745,8 @@ end
 
 -- === ОСНОВНОЕ ДЕЙСТВИЕ В РАУНДЕ (ЗАЧИСТКА -> ФАРМ -> ОБРАБОТКА СУМКИ) ===
 local function ActionState()
-    -- 1. Сначала запускаем предварительную зачистку (PreRoundKillChain)
-    if SETTINGS.AutoFarmEnabled and not IsTerminated and RoundInProgress() and rt:CheckIfPlayerWasInARound() then
+    -- 1. Предварительная зачистка (только в режиме Assassin)
+    if SETTINGS.GameType == "Assassin" and SETTINGS.AutoFarmEnabled and not IsTerminated and RoundInProgress() and rt:CheckIfPlayerWasInARound() then
         PreRoundKillChain()
     end
 
@@ -1713,14 +1761,15 @@ local function ActionState()
 
     -- 3. Действия при наполнении сумки или завершении раунда
     if BagIsFull then
-        if SETTINGS.BagFullMode == "KillAll" then
-            -- Режим Kill All: достаём нож и через TurboKill добиваем оставшуюся цель, забирая победу
+        -- В Classic при любой роли всегда делаем Reset. KillAll доступен только в Assassin.
+        if SETTINGS.GameType == "Assassin" and SETTINGS.BagFullMode == "KillAll" then
+            -- Режим Kill All (только в Assassin): достаём нож и через TurboKill добиваем оставшуюся цель, забирая победу
             KillFinalTarget()
             task.wait(0.5)
             BagIsFull = false
             ChangeState(State.WaitingForRoundEnd)
         else
-            -- Режим Reset: делаем сброс персонажа (BreakJoints). В живых остаётся только твинк/соперник
+            -- В Classic (или в Assassin при BagFullMode == "Reset"): сброс персонажа при любой роли
             UpdateStatus("Сумка полна: Сброс персонажа", Color3.fromRGB(200, 200, 200))
             ChangeState(State.WaitingForRoundEnd)
             local char = rt:Character()
