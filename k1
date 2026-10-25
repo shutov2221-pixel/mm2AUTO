@@ -41,8 +41,8 @@ ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = GetSafeGuiParent()
 
 local WINDOW_WIDTH = 370
-local EXPANDED_HEIGHT = 324
-local COLLAPSED_HEIGHT = 159
+local EXPANDED_HEIGHT = 355
+local COLLAPSED_HEIGHT = 188
 local isLogsCollapsed = false
 
 local MainFrame = Instance.new("Frame")
@@ -123,7 +123,7 @@ end)
 
 -- Контейнер кнопок
 local ControlsFrame = Instance.new("Frame")
-ControlsFrame.Size = UDim2.new(1, -16, 0, 85)
+ControlsFrame.Size = UDim2.new(1, -16, 0, 115)
 ControlsFrame.Position = UDim2.new(0, 8, 0, 36)
 ControlsFrame.BackgroundTransparency = 1
 ControlsFrame.Parent = MainFrame
@@ -156,9 +156,12 @@ local BtnKill = CreateButton("⚡ ТУРБО-ЦЕПОЧКА (AUTO-KILL)", Color3
 local BtnRemoteSniffer = CreateButton("🔴 REMOTE SNIFFER", Color3.fromRGB(140, 40, 160), UDim2.new(0, 0, 0, 58), UDim2.new(0.55, -2, 0, 26))
 local BtnCopyLog = CreateButton("📋 COPY/SAVE LOG", Color3.fromRGB(50, 80, 130), UDim2.new(0.55, 2, 0, 58), UDim2.new(0.45, -2, 0, 26))
 
+-- Ряд 4: Тест RemoteFunction EliminatePlayer
+local BtnTestRF = CreateButton("🧪 ТЕСТ RF (ELIMINATE)", Color3.fromRGB(180, 50, 120), UDim2.new(0, 0, 0, 87), UDim2.new(1, 0, 0, 26))
+
 local StatusFrame = Instance.new("Frame")
 StatusFrame.Size = UDim2.new(1, -16, 0, 22)
-StatusFrame.Position = UDim2.new(0, 8, 0, 125)
+StatusFrame.Position = UDim2.new(0, 8, 0, 155)
 StatusFrame.BackgroundColor3 = Color3.fromRGB(26, 26, 34)
 StatusFrame.Parent = MainFrame
 Instance.new("UICorner", StatusFrame).CornerRadius = UDim.new(0, 5)
@@ -183,7 +186,7 @@ end
 -- Консоль логов
 local ConsoleFrame = Instance.new("Frame")
 ConsoleFrame.Size = UDim2.new(1, -16, 0, 160)
-ConsoleFrame.Position = UDim2.new(0, 8, 0, 151)
+ConsoleFrame.Position = UDim2.new(0, 8, 0, 182)
 ConsoleFrame.BackgroundColor3 = Color3.fromRGB(14, 14, 18)
 ConsoleFrame.Parent = MainFrame
 Instance.new("UICorner", ConsoleFrame).CornerRadius = UDim.new(0, 6)
@@ -733,10 +736,11 @@ local function SerializeArg(v, depth)
 end
 
 local function SerializeArgs(...)
-    local args = { ... }
-    if #args == 0 then return "(нет аргументов)" end
+    local count = select("#", ...)
+    if count == 0 then return "(нет аргументов)" end
     local parts = {}
-    for i, v in ipairs(args) do
+    for i = 1, count do
+        local v = select(i, ...)
         table.insert(parts, "[" .. i .. "] " .. SerializeArg(v))
     end
     return table.concat(parts, "  |  ")
@@ -900,6 +904,84 @@ local function InspectAssassinData()
     UpdateStatus("Инспекция завершена", Color3.fromRGB(180, 220, 255))
 end
 
+-- =====================================================================
+-- ТЕСТ REMOTEFUNCTION ELIMINATEPLAYER
+-- =====================================================================
+local function FindRemoteFunction(name: string): RemoteFunction?
+    local direct = ReplicatedStorage:FindFirstChild(name)
+    if direct and direct:IsA("RemoteFunction") then return direct end
+    local deep = ReplicatedStorage:FindFirstChild(name, true)
+    if deep and deep:IsA("RemoteFunction") then return deep end
+    for _, item in ipairs(ReplicatedStorage:GetDescendants()) do
+        if item:IsA("RemoteFunction") and item.Name == name then
+            return item
+        end
+    end
+    return nil
+end
+
+local function RunTestEliminate()
+    Log("--- ТЕСТ REMOTEFUNCTION: EliminatePlayer ---", "KILL")
+    local rf = FindRemoteFunction("EliminatePlayer")
+    if not rf then
+        Log("❌ RemoteFunction 'EliminatePlayer' не найден в ReplicatedStorage!", "ERROR")
+        UpdateStatus("EliminatePlayer не найден", Color3.fromRGB(255, 80, 80))
+        return
+    end
+
+    Log("✓ Найден RF: " .. rf:GetFullName(), "SUCCESS")
+
+    -- Проверяем статус ножа (в руке или в инвентаре)
+    local char = LocalPlayer.Character
+    local hasKnifeInHand = false
+    if char then
+        for _, item in ipairs(char:GetChildren()) do
+            if item:IsA("Tool") and (item.Name == "Knife" or string.find(string.lower(item.Name), "knife")) then
+                hasKnifeInHand = true
+                break
+            end
+        end
+    end
+    Log("Статус ножа: " .. (hasKnifeInHand and "В РУКЕ" or "В РЮКЗАКЕ / НЕ ЭКИПИРОВАН"), "INFO")
+
+    -- Ищем цель
+    local target = RunTargetScan()
+    if not target then
+        for _, pl in ipairs(Players:GetPlayers()) do
+            if pl ~= LocalPlayer and pl.Character and pl.Character:FindFirstChildOfClass("Humanoid") and pl.Character:FindFirstChildOfClass("Humanoid").Health > 0 then
+                target = pl
+                break
+            end
+        end
+        if target then
+            Log("Цель взята из списка игроков: " .. target.DisplayName, "WARN")
+        end
+    end
+
+    if not target then
+        Log("❌ Живая цель не найдена для теста!", "ERROR")
+        UpdateStatus("Цель не найдена", Color3.fromRGB(255, 100, 100))
+        return
+    end
+
+    Log(string.format("🚀 Отправляем: %s:InvokeServer(Player: %s)...", rf.Name, target.Name), "KILL")
+    UpdateStatus("InvokeServer по " .. target.DisplayName .. "...", Color3.fromRGB(255, 140, 50))
+
+    local startTime = tick()
+    local ok, res = pcall(function()
+        return rf:InvokeServer(target)
+    end)
+    local ms = math.floor((tick() - startTime) * 1000)
+
+    if ok then
+        Log(string.format("✅ [%d мс] InvokeServer выполнен! Ответ: %s", ms, SerializeArg(res)), "SUCCESS")
+        UpdateStatus("RF ответ: " .. tostring(res), Color3.fromRGB(100, 255, 120))
+    else
+        Log(string.format("❌ [%d мс] InvokeServer ОШИБКА: %s", ms, tostring(res)), "ERROR")
+        UpdateStatus("RF ошибка: " .. tostring(res):sub(1, 30), Color3.fromRGB(255, 80, 80))
+    end
+end
+
 -- Привязка кнопок
 BtnScan.MouseButton1Click:Connect(RunTargetScan)
 BtnEquip.MouseButton1Click:Connect(function()
@@ -918,6 +1000,7 @@ BtnClear.MouseButton1Click:Connect(function()
 end)
 BtnRemoteSniffer.MouseButton1Click:Connect(StartSniffer)
 BtnCopyLog.MouseButton1Click:Connect(ExportLog)
+BtnTestRF.MouseButton1Click:Connect(RunTestEliminate)
 ToggleBtn.MouseButton1Click:Connect(function() SetLogsCollapsed(not isLogsCollapsed) end)
 
 local function Terminate()
