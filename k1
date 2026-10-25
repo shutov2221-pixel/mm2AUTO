@@ -1082,24 +1082,26 @@ local function RunTestEliminate()
 end
 
 -- =====================================================================
--- ДЕТЕКТОР СЛЕЖКИ ЗА ЧИТЕРАМИ (CHEATER SPY & TELEPORT / FLASH-EQUIP)
+-- ДЕТЕКТОР СЛЕЖКИ ЗА ЧИТЕРАМИ (ALL-PLAYER COMBAT SPY + COIN/TP DETECTOR)
 -- =====================================================================
 local spyActive = false
 local spyTargetPlayer: Player? = nil
 local spyConnections: { RBXScriptConnection } = {}
-local spyLastEquipTick = 0
-local spyLastToolName = ""
+local spyEquipTicks: { [Player]: number } = {}
+local spyLastTools: { [Player]: string } = {}
 local spyLastPos: Vector3? = nil
 local spyLastPosTick = 0
 local spyIsUnderMap = false
-local spyCoinsCollectedCount = 0
+local spyPlayerCoins: { [string]: number } = {}
 
 local function StopSpy()
     spyActive = false
     spyTargetPlayer = nil
     spyLastPos = nil
     spyIsUnderMap = false
-    spyCoinsCollectedCount = 0
+    table.clear(spyEquipTicks)
+    table.clear(spyLastTools)
+    table.clear(spyPlayerCoins)
 
     for _, c in ipairs(spyConnections) do
         if c and c.Connected then pcall(function() c:Disconnect() end) end
@@ -1108,160 +1110,190 @@ local function StopSpy()
 
     BtnSpyToggle.Text = "🕵️ СЛЕЖКА: ВЫКЛ"
     BtnSpyToggle.BackgroundColor3 = Color3.fromRGB(150, 45, 120)
-    Log("--- СЛЕЖКА ЗА ЧИТЕРОМ ОСТАНОВЛЕНА ---", "SPY")
+    Log("--- СЛЕЖКА ЗА ЧИТЕРАМИ ОСТАНОВЛЕНА ---", "SPY")
     UpdateStatus("Слежка остановлена", Color3.fromRGB(200, 200, 200))
 end
 
-local function HookSpyCharacter(char: Model, plr: Player)
-    -- Проверка уже имеющихся предметов при старте
+-- Хук персонажа любого игрока для ловли экипировки ножа
+local function HookPlayerForEquip(plr: Player, char: Model)
+    -- Проверка ножа прямо сейчас при подключении
     for _, item in ipairs(char:GetChildren()) do
         if item:IsA("Tool") then
-            Log(string.format("🕵️ [SPY] У %s УЖЕ В РУКЕ: '%s'", plr.Name, item.Name), "SPY")
+            Log(string.format("👀 [ИНВЕНТАРЬ] У %s СЕЙЧАС В РУКАХ: '%s'", plr.Name, item.Name), "SPY")
+            spyEquipTicks[plr] = tick()
+            spyLastTools[plr] = item.Name
         end
     end
 
-    -- 1. Детектор микро-экипировки (ChildAdded)
+    -- Ловим момент когда достал оружие
     local addConn = char.ChildAdded:Connect(function(child)
         if not spyActive then return end
         if child:IsA("Tool") then
-            spyLastEquipTick = tick()
-            spyLastToolName = child.Name
-            Log(string.format("👀 [SPY] %s ДОСТАЛ: '%s' (%s)", plr.Name, child.Name, os.date("%H:%M:%S")), "SPY")
+            spyEquipTicks[plr] = tick()
+            spyLastTools[plr] = child.Name
+            Log(string.format("👀 [ИНВЕНТАРЬ] %s ДОСТАЛ: '%s' (%s)", plr.Name, child.Name, os.date("%H:%M:%S")), "SPY")
         end
     end)
     table.insert(spyConnections, addConn)
 
-    -- 2. Детектор Flash-Equip (ChildRemoved)
+    -- Ловим момент когда убрал (детектор микро-замаха Flash-Equip)
     local remConn = char.ChildRemoved:Connect(function(child)
         if not spyActive then return end
         if child:IsA("Tool") then
-            local durationMs = math.floor((tick() - spyLastEquipTick) * 1000)
-            if durationMs <= 70 then
-                -- FLASH-EQUIP: Нож был в руках меньше 70 миллисекунд! Глаз человека не видит.
+            local startTick = spyEquipTicks[plr] or tick()
+            local durationMs = math.floor((tick() - startTick) * 1000)
+            if durationMs <= 85 then
+                -- FLASH-EQUIP: держал нож меньше 85 мс (для глаза это пустота!)
                 Log(string.format("⚡🔥 [FLASH-EQUIP] %s СКРЫТЫЙ УДАР! Держал '%s' всего %d мс!", plr.Name, child.Name, durationMs), "FLASH")
             else
-                Log(string.format("👀 [SPY] %s убрал '%s' (держал %d мс)", plr.Name, child.Name, durationMs), "SPY")
+                Log(string.format("👀 [ИНВЕНТАРЬ] %s убрал '%s' (держал %d мс)", plr.Name, child.Name, durationMs), "SPY")
             end
         end
     end)
     table.insert(spyConnections, remConn)
-
-    local hrp = char:FindFirstChild("HumanoidRootPart") :: BasePart?
-    if hrp then
-        spyLastPos = hrp.Position
-        spyLastPosTick = tick()
-    end
 end
 
-local function StartSpy(targetPlr: Player)
+local function StartSpy(targetPlr: Player?)
     if spyActive then
         StopSpy()
-        if spyTargetPlayer == targetPlr then return end
     end
 
     spyActive = true
     spyTargetPlayer = targetPlr
     spyLastPos = nil
     spyIsUnderMap = false
-    spyCoinsCollectedCount = 0
+    table.clear(spyEquipTicks)
+    table.clear(spyLastTools)
+    table.clear(spyPlayerCoins)
 
-    BtnSpyToggle.Text = "🟢 СЛЕЖКА: " .. targetPlr.Name:sub(1, 10)
+    local targetName = targetPlr and targetPlr.Name or "ВСЕ ИГРОКИ"
+    BtnSpyToggle.Text = "🟢 СЛЕЖКА: " .. targetName:sub(1, 10)
     BtnSpyToggle.BackgroundColor3 = Color3.fromRGB(40, 160, 60)
-    Log(string.format("--- 🕵️ СЛЕЖКА АКТИВНА: %s (@%s) ---", targetPlr.DisplayName, targetPlr.Name), "SPY")
-    UpdateStatus("Слежка за: " .. targetPlr.DisplayName, Color3.fromRGB(240, 110, 215))
+    Log(string.format("--- 🕵️ СЛЕЖКА АКТИВНА ПО: %s ---", targetName), "SPY")
+    UpdateStatus("Слежка за: " .. targetName, Color3.fromRGB(240, 110, 215))
 
-    -- Подключаем текущего персонажа
-    if targetPlr.Character then
-        HookSpyCharacter(targetPlr.Character, targetPlr)
+    -- 1. ХУКАЕМ ВСЕХ ИГРОКОВ НА СЕРВЕРЕ (чтобы не упустить ни одного читера)
+    for _, pl in ipairs(Players:GetPlayers()) do
+        if pl ~= LocalPlayer then
+            if pl.Character then
+                HookPlayerForEquip(pl, pl.Character)
+            end
+            local cConn = pl.CharacterAdded:Connect(function(c)
+                if not spyActive then return end
+                task.wait(0.05)
+                HookPlayerForEquip(pl, c)
+            end)
+            table.insert(spyConnections, cConn)
+        end
     end
 
-    -- Подключаем респавн
-    local charAddedConn = targetPlr.CharacterAdded:Connect(function(newChar)
+    local pAddConn = Players.PlayerAdded:Connect(function(pl)
         if not spyActive then return end
-        Log(string.format("🕵️ [SPY] %s заспавнился", targetPlr.Name), "SPY")
-        task.wait(0.05)
-        HookSpyCharacter(newChar, targetPlr)
+        local cConn = pl.CharacterAdded:Connect(function(c)
+            if not spyActive then return end
+            task.wait(0.05)
+            HookPlayerForEquip(pl, c)
+        end)
+        table.insert(spyConnections, cConn)
     end)
-    table.insert(spyConnections, charAddedConn)
+    table.insert(spyConnections, pAddConn)
 
-    -- 3. Корреляция с убийствами (KillEvent)
+    -- 2. ГЛОБАЛЬНЫЙ ДЕТЕКТОР КИЛЛОВ: В момент смерти жертвы проверяем КТО ДЕРЖИТ НОЖ
     local killEvent = FindRemoteEvent("KillEvent")
     if killEvent then
         local kConn = killEvent.OnClientEvent:Connect(function(victimName: any)
-            if not spyActive or not spyTargetPlayer then return end
-            local now = tick()
-            local diffMs = math.floor((now - spyLastEquipTick) * 1000)
-            if diffMs <= 350 then
-                Log(string.format("💀 [SPY-KILL] %s ЛИКВИДИРОВАЛ '%s'! (Нож взведён %d мс назад)", spyTargetPlayer.Name, tostring(victimName or "Игрока"), diffMs), "FLASH")
+            if not spyActive then return end
+            local victim = tostring(victimName or "Игрок")
+
+            -- Сканируем, у кого из игроков прямо сейчас в руках нож
+            local knifeHolders = {}
+            for _, pl in ipairs(Players:GetPlayers()) do
+                if pl.Character then
+                    for _, item in ipairs(pl.Character:GetChildren()) do
+                        if item:IsA("Tool") and (item.Name == "Knife" or string.find(string.lower(item.Name), "knife")) then
+                            table.insert(knifeHolders, pl.Name)
+                        end
+                    end
+                end
             end
+
+            local holdersText = #knifeHolders > 0 and table.concat(knifeHolders, ", ") or "НИ У КОГО (Скрытый нож / Рюкзак!)"
+            Log(string.format("💀 [КИЛЛ] Погиб: '%s' | С ножом в руках: %s", victim, holdersText), "FLASH")
         end)
         table.insert(spyConnections, kConn)
     end
 
-    -- 4. Слежка за сбором монет (CoinContainer в Workspace)
-    local map = nil
-    for _, v in ipairs(Workspace:GetChildren()) do
-        if v:FindFirstChild("CoinContainer") then
-            map = v
-            break
-        end
-    end
-    local coinContainer = map and map:FindFirstChild("CoinContainer")
-    if coinContainer then
-        local coinConn = coinContainer.ChildRemoved:Connect(function(coin)
-            if not spyActive or not spyTargetPlayer then return end
-            local char = spyTargetPlayer.Character
-            local hrp = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
-            local coinPart = coin:IsA("BasePart") and coin or coin:FindFirstChildWhichIsA("BasePart")
-            if hrp and coinPart then
-                local dist = (coinPart.Position - hrp.Position).Magnitude
-                if dist <= 20 then
-                    spyCoinsCollectedCount = spyCoinsCollectedCount + 1
-                    if spyCoinsCollectedCount % 5 == 0 or spyCoinsCollectedCount == 1 then
-                        Log(string.format("🪙 [SPY-COIN] %s собрал монеты (Всего: %d шт, дистанция: %.1f ст)", spyTargetPlayer.Name, spyCoinsCollectedCount, dist), "SPY")
+    -- 3. СЕРВЕРНЫЙ ДЕТЕКТОР СБОРА МОНЕТ (PlayerDataChanged)
+    local playerDataChangedEvent = FindRemoteEvent("PlayerDataChanged")
+    if playerDataChangedEvent then
+        local pConn = playerDataChangedEvent.OnClientEvent:Connect(function(data: any)
+            if not spyActive or typeof(data) ~= "table" then return end
+            for pName, pInfo in pairs(data) do
+                if typeof(pInfo) == "table" and pInfo.Coins ~= nil then
+                    local currentCoins = tonumber(pInfo.Coins) or 0
+                    local prevCoins = spyPlayerCoins[tostring(pName)]
+                    if prevCoins and currentCoins > prevCoins then
+                        local gained = currentCoins - prevCoins
+                        Log(string.format("🪙 [МОНЕТЫ] %s подобрал +%d монету! (Всего: %d)", tostring(pName), gained, currentCoins), "SPY")
                     end
+                    spyPlayerCoins[tostring(pName)] = currentCoins
                 end
             end
         end)
-        table.insert(spyConnections, coinConn)
+        table.insert(spyConnections, pConn)
     end
 
-    -- 5. Цикл проверки координат: Телепорты и Уход под карту (50 Гц)
+    -- 4. СЛЕЖКА ЗА КООРДИНАТАМИ, ТЕЛЕПОРТАМИ И ПУСТОТОЙ
     task.spawn(function()
         while spyActive and not isTerminated do
             task.wait(0.04)
-            if not spyTargetPlayer then break end
-            local char = spyTargetPlayer.Character
-            local hrp = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
-            if hrp and hrp.Parent then
-                local currentPos = hrp.Position
-                local now = tick()
 
-                -- Проверка: уход в пустоту / под карту
-                if currentPos.Y < -20 then
-                    if not spyIsUnderMap then
-                        spyIsUnderMap = true
-                        Log(string.format("🕳️ [SPY-VOID] %s УШЁЛ ПОД КАРТУ! Y = %.1f (Неуязвим для ножей/пуль)", spyTargetPlayer.Name, currentPos.Y), "TP")
+            -- Если выбран конкретный игрок — следим за ним
+            -- Если нет — ищем читеров с аномальной скоростью среди всех
+            local targetsToCheck = {}
+            if spyTargetPlayer and spyTargetPlayer.Parent then
+                table.insert(targetsToCheck, spyTargetPlayer)
+            else
+                for _, pl in ipairs(Players:GetPlayers()) do
+                    if pl ~= LocalPlayer then table.insert(targetsToCheck, pl) end
+                end
+            end
+
+            for _, pl in ipairs(targetsToCheck) do
+                local char = pl.Character
+                local hrp = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+                if hrp and hrp.Parent then
+                    local currentPos = hrp.Position
+                    local now = tick()
+
+                    -- Проверка нахождения ПОД КАРТОЙ
+                    if currentPos.Y < -20 then
+                        if pl == spyTargetPlayer and not spyIsUnderMap then
+                            spyIsUnderMap = true
+                            Log(string.format("🕳️ [SPY-VOID] %s УШЁЛ ПОД КАРТУ! Y = %.1f (Неуязвим)", pl.Name, currentPos.Y), "TP")
+                        end
+                    else
+                        if pl == spyTargetPlayer and spyIsUnderMap then
+                            spyIsUnderMap = false
+                            Log(string.format("⬆️ [SPY-VOID] %s вернулся на карту (Y = %.1f)", pl.Name, currentPos.Y), "SPY")
+                        end
                     end
-                else
-                    if spyIsUnderMap then
-                        spyIsUnderMap = false
-                        Log(string.format("⬆️ [SPY-VOID] %s вернулся на карту (Y = %.1f)", spyTargetPlayer.Name, currentPos.Y), "SPY")
+
+                    -- Проверка телепорта (сдвиг более 25 студов за 40 мс)
+                    if pl == spyTargetPlayer and spyLastPos then
+                        local dt = math.max(0.001, now - spyLastPosTick)
+                        local dist = (currentPos - spyLastPos).Magnitude
+                        local speed = dist / dt
+                        if dist > 20 and speed > 350 then
+                            Log(string.format("🚀 [SPY-TP] %s ТЕЛЕПОРТ! Сдвиг на %.1f ст (Скорость: %.0f ст/с)", pl.Name, dist, speed), "TP")
+                        end
+                    end
+
+                    if pl == spyTargetPlayer then
+                        spyLastPos = currentPos
+                        spyLastPosTick = now
                     end
                 end
-
-                -- Проверка: мгновенный телепорт (рывок более 35 студов за 40 мс)
-                if spyLastPos then
-                    local dt = math.max(0.001, now - spyLastPosTick)
-                    local dist = (currentPos - spyLastPos).Magnitude
-                    local speed = dist / dt
-                    if dist > 35 and speed > 400 then
-                        Log(string.format("🚀 [SPY-TP] %s ТЕЛЕПОРТ! Сдвиг на %.1f ст (Скорость: %.0f ст/с)", spyTargetPlayer.Name, dist, speed), "TP")
-                    end
-                end
-
-                spyLastPos = currentPos
-                spyLastPosTick = now
             end
         end
     end)
@@ -1302,8 +1334,8 @@ local function AutoDetectCheater()
         Log(string.format("🎯 НАЙДЕН ЧИТЕР: %s (@%s) [%s]", chosen.player.DisplayName, chosen.player.Name, chosen.reason), "FLASH")
         StartSpy(chosen.player)
     else
-        Log("Подозрительных игроков под картой не найдено. Введите ник вручную в поле выше.", "WARN")
-        UpdateStatus("Читер не найден авто-сканом", Color3.fromRGB(255, 180, 50))
+        Log("Подозрительных игроков под картой не найдено. Запускаем слежку за ВСЕМ сервером!", "WARN")
+        StartSpy(nil)
     end
 end
 
