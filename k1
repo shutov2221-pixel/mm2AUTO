@@ -1,11 +1,12 @@
 --!strict
 -- =====================================================================
--- MM2 ASSASSIN ULTRA-FAST KILLER [TURBO v4.1 - AUTO-RETRY & KILL CONFIRM]
--- Исправлен баг со ступором:
--- 1. Добавлена проверка смерти цели: если ник в TargetName не сменился и цель
---    еще жива, скрипт автоматически повторяет удары каждые 0.06с до победного!
--- 2. Надежный двойной импульс касания (Double-Pulse) для 100% урона.
--- 3. Реактивный перехват через GetPropertyChangedSignal + постоянный watchdog.
+-- MM2 ASSASSIN ULTRA-FAST KILLER [HYBRID TURBO v5.0]
+-- 1. СЕТЕВОЙ ПЕРЕХВАТ (0 мс задержки): Прямой слушатель RemoteEvent [ChangeTarget]
+--    из ReplicatedStorage мгновенно получает системный ник и UserId цели ДО отрисовки в GUI!
+-- 2. МГНОВЕННЫЙ УДАР: Double-Pulse touchinterest по цели сразу при получении пакета.
+-- 3. АВТО-ДОБИВАНИЕ (Watchdog 0.05с): Если цель не погибла сразу, бьет каждые 0.05с.
+-- 4. РЕЗЕРВНЫЙ UI-СЛОЙ: Если скрипт запущен в середине раунда, цель берется из UI.
+-- 5. МГНОВЕННАЯ ПОБЕДА: Отслеживание скрытия AssassinTarget + пакет RoundEndFade.
 -- =====================================================================
 
 local Players = game:GetService("Players")
@@ -40,8 +41,8 @@ ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = GetSafeGuiParent()
 
 local WINDOW_WIDTH = 370
-local EXPANDED_HEIGHT = 295
-local COLLAPSED_HEIGHT = 130
+local EXPANDED_HEIGHT = 324
+local COLLAPSED_HEIGHT = 159
 local isLogsCollapsed = false
 
 local MainFrame = Instance.new("Frame")
@@ -71,7 +72,7 @@ local TitleLabel = Instance.new("TextLabel")
 TitleLabel.Size = UDim2.new(1, -70, 1, 0)
 TitleLabel.Position = UDim2.new(0, 10, 0, 0)
 TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "⚡ MM2 ASSASSIN TURBO v4.1"
+TitleLabel.Text = "⚡ MM2 ASSASSIN TURBO v5.0 [NETWORK]"
 TitleLabel.TextColor3 = Color3.fromRGB(255, 215, 80)
 TitleLabel.Font = Enum.Font.GothamBold
 TitleLabel.TextSize = 12
@@ -122,7 +123,7 @@ end)
 
 -- Контейнер кнопок
 local ControlsFrame = Instance.new("Frame")
-ControlsFrame.Size = UDim2.new(1, -16, 0, 56)
+ControlsFrame.Size = UDim2.new(1, -16, 0, 85)
 ControlsFrame.Position = UDim2.new(0, 8, 0, 36)
 ControlsFrame.BackgroundTransparency = 1
 ControlsFrame.Parent = MainFrame
@@ -151,9 +152,13 @@ local BtnClear = CreateButton("🗑", Color3.fromRGB(60, 60, 70), UDim2.new(0.82
 local BtnSingle = CreateButton("🎯 1-SHOT (УДАР)", Color3.fromRGB(220, 110, 20), UDim2.new(0, 0, 0, 29), UDim2.new(0.42, -2, 0, 26))
 local BtnKill = CreateButton("⚡ ТУРБО-ЦЕПОЧКА (AUTO-KILL)", Color3.fromRGB(200, 45, 45), UDim2.new(0.42, 2, 0, 29), UDim2.new(0.58, -2, 0, 26))
 
+-- Ряд 3: Remote Sniffer | Copy Log
+local BtnRemoteSniffer = CreateButton("🔴 REMOTE SNIFFER", Color3.fromRGB(140, 40, 160), UDim2.new(0, 0, 0, 58), UDim2.new(0.55, -2, 0, 26))
+local BtnCopyLog = CreateButton("📋 COPY/SAVE LOG", Color3.fromRGB(50, 80, 130), UDim2.new(0.55, 2, 0, 58), UDim2.new(0.45, -2, 0, 26))
+
 local StatusFrame = Instance.new("Frame")
 StatusFrame.Size = UDim2.new(1, -16, 0, 22)
-StatusFrame.Position = UDim2.new(0, 8, 0, 96)
+StatusFrame.Position = UDim2.new(0, 8, 0, 125)
 StatusFrame.BackgroundColor3 = Color3.fromRGB(26, 26, 34)
 StatusFrame.Parent = MainFrame
 Instance.new("UICorner", StatusFrame).CornerRadius = UDim.new(0, 5)
@@ -162,7 +167,7 @@ local StatusLabel = Instance.new("TextLabel")
 StatusLabel.Size = UDim2.new(1, -10, 1, 0)
 StatusLabel.Position = UDim2.new(0, 6, 0, 0)
 StatusLabel.BackgroundTransparency = 1
-StatusLabel.Text = "> Турбо-режим v4.1 готов к работе"
+StatusLabel.Text = "> Сетевой турбо-режим v5.0 готов"
 StatusLabel.TextColor3 = Color3.fromRGB(180, 220, 255)
 StatusLabel.Font = Enum.Font.GothamSemibold
 StatusLabel.TextSize = 10
@@ -178,7 +183,7 @@ end
 -- Консоль логов
 local ConsoleFrame = Instance.new("Frame")
 ConsoleFrame.Size = UDim2.new(1, -16, 0, 160)
-ConsoleFrame.Position = UDim2.new(0, 8, 0, 122)
+ConsoleFrame.Position = UDim2.new(0, 8, 0, 151)
 ConsoleFrame.BackgroundColor3 = Color3.fromRGB(14, 14, 18)
 ConsoleFrame.Parent = MainFrame
 Instance.new("UICorner", ConsoleFrame).CornerRadius = UDim.new(0, 6)
@@ -212,6 +217,8 @@ local function ClearLogs()
 end
 
 local logCounter = 0
+local rawLogLines = {} -- накопитель для сохранения в файл
+
 local function Log(message: string, msgType: string?)
     if isTerminated then return end
     logCounter = logCounter + 1
@@ -234,10 +241,16 @@ local function Log(message: string, msgType: string?)
     elseif msgType == "TARGET" then
         color = Color3.fromRGB(70, 190, 255)
         prefix = "[TARGET]"
+    elseif msgType == "REMOTE" then
+        color = Color3.fromRGB(255, 140, 50)
+        prefix = "[REMOTE]"
     end
 
     local timeStr = os.date("%H:%M:%S")
     local fullText = string.format("%s %s %s", timeStr, prefix, message)
+
+    -- Сохраняем в накопитель для экспорта
+    table.insert(rawLogLines, fullText)
 
     local lbl = Instance.new("TextLabel")
     lbl.Size = UDim2.new(1, -6, 0, 0)
@@ -461,25 +474,81 @@ local function RunSingleTargetKill()
 end
 
 -- =====================================================================
--- АВТО-ЦЕПОЧКА С КОНТРОЛЕМ СМЕРТИ (AUTO-RETRY ДО СМЕНЫ ТАРГЕТА)
+-- СЕТЕВОЙ ГИБРИД: ПАКЕТНЫЙ ПЕРЕХВАТ (ChangeTarget) + РЕЗЕРВНЫЙ UI WATCHDOG
 -- =====================================================================
+local function FindRemoteEvent(name: string): RemoteEvent?
+    local direct = ReplicatedStorage:FindFirstChild(name)
+    if direct and direct:IsA("RemoteEvent") then return direct end
+    local deep = ReplicatedStorage:FindFirstChild(name, true)
+    if deep and deep:IsA("RemoteEvent") then return deep end
+    for _, item in ipairs(ReplicatedStorage:GetDescendants()) do
+        if item:IsA("RemoteEvent") and item.Name == name then
+            return item
+        end
+    end
+    return nil
+end
+
+local networkTargetConn: RBXScriptConnection? = nil
+local roundEndConn: RBXScriptConnection? = nil
 local chainConnection: RBXScriptConnection? = nil
+local activeTargetPlayer: Player? = nil
 local activeTargetName = ""
 local killAttemptsForTarget = 0
 
 local function StopKillLoop()
     isRunning = false
+    activeTargetPlayer = nil
+    activeTargetName = ""
+    killAttemptsForTarget = 0
+
+    if networkTargetConn then
+        networkTargetConn:Disconnect()
+        networkTargetConn = nil
+    end
+    if roundEndConn then
+        roundEndConn:Disconnect()
+        roundEndConn = nil
+    end
     if chainConnection then
         chainConnection:Disconnect()
         chainConnection = nil
     end
+
     BtnKill.Text = "⚡ ТУРБО-ЦЕПОЧКА"
     BtnKill.BackgroundColor3 = Color3.fromRGB(200, 45, 45)
     UpdateStatus("Турбо-цепочка остановлена", Color3.fromRGB(200, 200, 200))
     Log("Турбо-цепочка остановлена", "INFO")
 end
 
--- Функция нанесения удара по текущей цели из UI
+-- Прямой удар по объекту игрока (вызывается из сети и из UI)
+local function AttackTargetPlayer(targetPlayer: Player, knife: Tool): boolean
+    if not targetPlayer or not targetPlayer.Character then return false end
+
+    local hum = targetPlayer.Character:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return false end
+
+    -- Если пришел новый таргет — сбрасываем счетчик попыток
+    if targetPlayer.Name ~= activeTargetName then
+        activeTargetName = targetPlayer.Name
+        killAttemptsForTarget = 0
+    end
+
+    killAttemptsForTarget = killAttemptsForTarget + 1
+    local tStart = tick()
+    local ok = TurboKill(targetPlayer, knife)
+    local ms = math.floor((tick() - tStart) * 1000)
+
+    if killAttemptsForTarget == 1 then
+        Log(string.format("⚡ [%d мс] Атака цели: %s (@%s)", ms, targetPlayer.DisplayName, targetPlayer.Name), "KILL")
+        UpdateStatus("Атака: " .. targetPlayer.DisplayName, Color3.fromRGB(255, 80, 80))
+    elseif killAttemptsForTarget % 3 == 0 then
+        Log(string.format("🔄 Добивание: %s (Попытка %d)", targetPlayer.DisplayName, killAttemptsForTarget), "WARN")
+    end
+    return ok
+end
+
+-- Функция нанесения удара по текущей цели из UI (резерв)
 local function AttackTargetFromLabel(label: TextLabel, knife: Tool)
     if not IsTargetVisible(label) then return end
 
@@ -487,30 +556,11 @@ local function AttackTargetFromLabel(label: TextLabel, knife: Tool)
     local cleanName = CleanNickname(rawText)
     if cleanName == "" or cleanName == "Label" or cleanName == "None" then return end
 
-    -- Если пришел новый таргет — сбрасываем счетчик попыток
-    if cleanName ~= activeTargetName then
-        activeTargetName = cleanName
-        killAttemptsForTarget = 0
-    end
-
     local targetPlayer = FindPlayerByName(cleanName)
     if not targetPlayer or not targetPlayer.Character then return end
 
-    local hum = targetPlayer.Character:FindFirstChildOfClass("Humanoid")
-    -- Проверяем: если цель ВСЁ ЕЩЕ жива, бьем!
-    if hum and hum.Health > 0 then
-        killAttemptsForTarget = killAttemptsForTarget + 1
-        local tStart = tick()
-        TurboKill(targetPlayer, knife)
-        local ms = math.floor((tick() - tStart) * 1000)
-
-        if killAttemptsForTarget == 1 then
-            Log(string.format("⚡ [%d мс] Атака цели: %s", ms, targetPlayer.DisplayName), "KILL")
-            UpdateStatus("Атака: " .. targetPlayer.DisplayName, Color3.fromRGB(255, 80, 80))
-        elseif killAttemptsForTarget % 3 == 0 then
-            Log(string.format("🔄 Добивание: %s (Попытка %d)", targetPlayer.DisplayName, killAttemptsForTarget), "WARN")
-        end
-    end
+    activeTargetPlayer = targetPlayer
+    AttackTargetPlayer(targetPlayer, knife)
 end
 
 local function StartKillLoop()
@@ -520,10 +570,14 @@ local function StartKillLoop()
     end
 
     isRunning = true
+    activeTargetPlayer = nil
+    activeTargetName = ""
+    killAttemptsForTarget = 0
+
     BtnKill.Text = "⚡ СТОП ТУРБО"
     BtnKill.BackgroundColor3 = Color3.fromRGB(40, 180, 50)
-    UpdateStatus("Турбо-цепочка АКТИВНА (Auto-Retry)", Color3.fromRGB(100, 255, 100))
-    Log("--- СТАРТ ТУРБО-ЦЕПОЧКИ v4.1 ---", "KILL")
+    UpdateStatus("Сетевой Турбо-режим АКТИВЕН", Color3.fromRGB(100, 255, 100))
+    Log("--- СТАРТ СЕТЕВОЙ ТУРБО-ЦЕПОЧКИ v5.0 ---", "KILL")
 
     task.spawn(function()
         local knife = InspectAndEquipKnife()
@@ -533,27 +587,66 @@ local function StartKillLoop()
             return
         end
 
-        local label = FindTargetLabel()
-        if not label then
-            Log("Ошибка: TargetName не найден в UI!", "ERROR")
-            StopKillLoop()
-            return
+        -- 1. СЕТЕВОЙ ПЕРЕХВАТ: Слушаем ChangeTarget RemoteEvent (0 мс задержки)
+        local changeTargetEvent = FindRemoteEvent("ChangeTarget")
+        if changeTargetEvent then
+            if networkTargetConn then networkTargetConn:Disconnect() end
+            networkTargetConn = changeTargetEvent.OnClientEvent:Connect(function(targetName: any, _, _, targetUserId: any)
+                if not isRunning or isTerminated then return end
+
+                local targetPlr: Player? = nil
+                if typeof(targetUserId) == "number" and targetUserId > 0 then
+                    targetPlr = Players:GetPlayerByUserId(targetUserId)
+                end
+                if not targetPlr and typeof(targetName) == "string" and targetName ~= "" then
+                    targetPlr = Players:FindFirstChild(targetName)
+                end
+
+                if targetPlr then
+                    activeTargetPlayer = targetPlr
+                    Log(string.format("📡 [СЕТЬ 0мс] Новый таргет: %s (@%s)", targetPlr.DisplayName, targetPlr.Name), "TARGET")
+
+                    local myChar = LocalPlayer.Character
+                    if knife.Parent ~= myChar then
+                        knife = InspectAndEquipKnife() or knife
+                    end
+                    AttackTargetPlayer(targetPlr, knife)
+                end
+            end)
+            Log("📡 Сетевой перехват [ChangeTarget] подключен (" .. changeTargetEvent.Name .. ")", "SUCCESS")
+        else
+            Log("Предупреждение: ChangeTarget не найден, работаем через UI", "WARN")
         end
 
-        activeTargetName = ""
-        killAttemptsForTarget = 0
+        -- 2. СЕТЕВОЙ ПЕРЕХВАТ ОКОНЧАНИЯ РАУНДА (RoundEndFade)
+        local roundEndEvent = FindRemoteEvent("RoundEndFade")
+        if roundEndEvent then
+            if roundEndConn then roundEndConn:Disconnect() end
+            roundEndConn = roundEndEvent.OnClientEvent:Connect(function()
+                if isRunning then
+                    Log("🏁 [СЕТЬ] Раунд окончен (пакет RoundEndFade)", "SUCCESS")
+                    UpdateStatus("РАУНД ВЫИГРАН! Победа.", Color3.fromRGB(100, 255, 120))
+                    StopKillLoop()
+                end
+            end)
+        end
 
-        -- 1. Сразу бьем текущую цель
-        AttackTargetFromLabel(label, knife)
+        -- 3. Резервный старт: сразу бьем цель из UI (если раунд уже начался до включения кнопки)
+        local initialLabel = FindTargetLabel()
+        if initialLabel and IsTargetVisible(initialLabel) then
+            AttackTargetFromLabel(initialLabel, knife)
+        end
 
-        -- 2. Реактивный перехват момента смены текста в UI
-        if chainConnection then chainConnection:Disconnect() end
-        chainConnection = label:GetPropertyChangedSignal("Text"):Connect(function()
-            if not isRunning or isTerminated then return end
-            AttackTargetFromLabel(label, knife)
-        end)
+        -- 4. Резервный слушатель UI (GetPropertyChangedSignal)
+        if initialLabel then
+            if chainConnection then chainConnection:Disconnect() end
+            chainConnection = initialLabel:GetPropertyChangedSignal("Text"):Connect(function()
+                if not isRunning or isTerminated then return end
+                AttackTargetFromLabel(initialLabel, knife)
+            end)
+        end
 
-        -- 3. Watchdog-цикл (гарантия добивания: каждые 0.05с проверяет, жива ли цель)
+        -- 5. Watchdog-цикл (гарантия добивания каждые 0.05с + проверка окончания)
         local emptyCounter = 0
         while isRunning and not isTerminated do
             task.wait(0.05)
@@ -570,7 +663,15 @@ local function StartKillLoop()
                 knife = InspectAndEquipKnife() or knife
             end
 
-            -- Получаем актуальный лейбл и проверяем видимость окна таргета
+            -- Авто-добивание: если цель еще жива, повторяем импульс
+            if activeTargetPlayer and activeTargetPlayer.Character then
+                local hum = activeTargetPlayer.Character:FindFirstChildOfClass("Humanoid")
+                if hum and hum.Health > 0 then
+                    AttackTargetPlayer(activeTargetPlayer, knife)
+                end
+            end
+
+            -- Проверяем UI на скрытие окна и окончание раунда
             local currentLabel = FindTargetLabel()
             local isVisible = IsTargetVisible(currentLabel)
             local raw = currentLabel and currentLabel.Text or ""
@@ -588,8 +689,8 @@ local function StartKillLoop()
                 end
             else
                 emptyCounter = 0
-                -- ПРОВЕРКА ЦЕЛИ: если таргет в UI висит и окно видимо, бьем пока он не погибнет!
-                if currentLabel then
+                -- Если цель в UI есть, а сетевой таргет еще не привязан — атакуем по UI
+                if (not activeTargetPlayer or not activeTargetPlayer.Character) and currentLabel then
                     AttackTargetFromLabel(currentLabel, knife)
                 end
             end
@@ -600,29 +701,203 @@ local function StartKillLoop()
 end
 
 -- =====================================================================
--- СНИФФЕР ДАННЫХ ASSASSIN
+-- ПОЛНЫЙ REMOTE SNIFFER
 -- =====================================================================
+
+-- Сериализатор аргументов ремоута
+local function SerializeArg(v, depth)
+    depth = depth or 0
+    if depth > 2 then return "..." end
+    local t = typeof(v)
+    if t == "string" then
+        return '"' .. tostring(v):sub(1, 80) .. '"'
+    elseif t == "number" or t == "boolean" then
+        return tostring(v)
+    elseif t == "nil" then
+        return "nil"
+    elseif t == "Instance" then
+        local ok, full = pcall(function() return v:GetFullName() end)
+        return "[" .. v.ClassName .. "] " .. (ok and full or v.Name)
+    elseif t == "table" then
+        local parts = {}
+        local i = 0
+        for k, val in pairs(v) do
+            i = i + 1
+            if i > 6 then table.insert(parts, "..."); break end
+            table.insert(parts, tostring(k) .. "=" .. SerializeArg(val, depth + 1))
+        end
+        return "{" .. table.concat(parts, ", ") .. "}"
+    else
+        return t .. "(" .. tostring(v):sub(1, 40) .. ")"
+    end
+end
+
+local function SerializeArgs(...)
+    local args = { ... }
+    if #args == 0 then return "(нет аргументов)" end
+    local parts = {}
+    for i, v in ipairs(args) do
+        table.insert(parts, "[" .. i .. "] " .. SerializeArg(v))
+    end
+    return table.concat(parts, "  |  ")
+end
+
+-- Состояние снифера
+local snifferActive = false
+local snifferConns: { RBXScriptConnection } = {}
+local snifferHooked: { [Instance]: boolean } = {}
+
+local function StopSniffer()
+    snifferActive = false
+    for _, c in ipairs(snifferConns) do
+        if c and c.Connected then pcall(function() c:Disconnect() end) end
+    end
+    table.clear(snifferConns)
+    table.clear(snifferHooked)
+    BtnRemoteSniffer.Text = "🔴 REMOTE SNIFFER"
+    BtnRemoteSniffer.BackgroundColor3 = Color3.fromRGB(140, 40, 160)
+    Log("=== SNIFFER ОСТАНОВЛЕН. Строк в логе: " .. #rawLogLines .. " ===", "WARN")
+    UpdateStatus("Remote Sniffer остановлен", Color3.fromRGB(200, 200, 200))
+end
+
+local function HookRemote(remote)
+    if snifferHooked[remote] then return end
+    snifferHooked[remote] = true
+
+    if remote:IsA("RemoteEvent") then
+        local conn = remote.OnClientEvent:Connect(function(...)
+            if not snifferActive then return end
+            local ok, path = pcall(function() return remote:GetFullName() end)
+            local name = ok and path or remote.Name
+            Log(string.format("[RE->CLIENT] %s  >>  %s", name, SerializeArgs(...)), "REMOTE")
+        end)
+        table.insert(snifferConns, conn)
+
+    elseif remote:IsA("RemoteFunction") then
+        -- RemoteFunction: можно только залогировать факт существования
+        -- (OnClientInvoke без замены оригинального обработчика не перехватывается)
+        local ok, path = pcall(function() return remote:GetFullName() end)
+        Log(string.format("[RF] %s (существует, пассивно)", ok and path or remote.Name), "REMOTE")
+    end
+end
+
+local function StartSniffer()
+    if snifferActive then
+        StopSniffer()
+        return
+    end
+
+    snifferActive = true
+    BtnRemoteSniffer.Text = "🟢 SNIFFER: ON"
+    BtnRemoteSniffer.BackgroundColor3 = Color3.fromRGB(40, 160, 60)
+    Log("=== REMOTE SNIFFER ЗАПУЩЕН ===", "REMOTE")
+    Log("Перехватываем ВСЕ RemoteEvent в ReplicatedStorage...", "REMOTE")
+
+    -- Хукаем все существующие ремоуты
+    local reCount, rfCount = 0, 0
+    for _, v in ipairs(ReplicatedStorage:GetDescendants()) do
+        if v:IsA("RemoteEvent") then
+            HookRemote(v)
+            reCount = reCount + 1
+            Log("  [RE] " .. v:GetFullName(), "REMOTE")
+        elseif v:IsA("RemoteFunction") then
+            HookRemote(v)
+            rfCount = rfCount + 1
+        end
+    end
+    Log(string.format("Подключено: %d RemoteEvent, %d RemoteFunction", reCount, rfCount), "REMOTE")
+    Log("Ожидаем события... (убей кого-нибудь или получи таргет)", "WARN")
+
+    -- Хукаем новые ремоуты при появлении
+    local addConn = ReplicatedStorage.DescendantAdded:Connect(function(v)
+        if not snifferActive then return end
+        if v:IsA("RemoteEvent") or v:IsA("RemoteFunction") then
+            HookRemote(v)
+            Log("[NEW REMOTE] " .. v:GetFullName(), "REMOTE")
+        end
+    end)
+    table.insert(snifferConns, addConn)
+
+    UpdateStatus("Remote Sniffer активен — жди убийства!", Color3.fromRGB(255, 140, 50))
+end
+
+-- Кнопка «COPY/SAVE LOG»: сохраняет все строки в файл + копирует в буфер
+local function ExportLog()
+    if #rawLogLines == 0 then
+        Log("Лог пуст — нечего экспортировать", "WARN")
+        return
+    end
+
+    local content = table.concat(rawLogLines, "\n")
+    local fileName = "mm2_remote_log.txt"
+
+    -- Пробуем writefile (Synapse / Krnl / Delta и т.д.)
+    local wf = writefile or (syn and syn.writefile)
+    if typeof(wf) == "function" then
+        local ok, err = pcall(wf, fileName, content)
+        if ok then
+            Log("✅ Лог сохранён в: " .. fileName .. " (" .. #rawLogLines .. " строк)", "SUCCESS")
+        else
+            Log("❌ writefile ошибка: " .. tostring(err), "ERROR")
+        end
+    else
+        Log("writefile недоступен в этом эксплойте", "WARN")
+    end
+
+    -- Пробуем setclipboard
+    local sc = setclipboard or toclipboard or (syn and syn.write_clipboard)
+    if typeof(sc) == "function" then
+        local ok2 = pcall(sc, content)
+        if ok2 then
+            Log("✅ Лог скопирован в буфер обмена (" .. #rawLogLines .. " строк)", "SUCCESS")
+        end
+    else
+        Log("setclipboard недоступен — только writefile", "WARN")
+    end
+
+    UpdateStatus("Лог экспортирован: " .. #rawLogLines .. " строк", Color3.fromRGB(100, 255, 120))
+end
+
+-- Расширенный сниффер данных (кнопка 🕵️)
 local function InspectAssassinData()
     Log("--- СНИФФЕР ДАННЫХ ASSASSIN ---", "TARGET")
+
+    -- Все ремоуты в ReplicatedStorage
+    Log("== ВСЕ REMOTES в ReplicatedStorage ==", "TARGET")
+    local found = 0
+    for _, v in ipairs(ReplicatedStorage:GetDescendants()) do
+        if v:IsA("RemoteEvent") or v:IsA("RemoteFunction") then
+            local tp = v:IsA("RemoteEvent") and "RE" or "RF"
+            Log(string.format("[%s] %s", tp, v:GetFullName()), "REMOTE")
+            found = found + 1
+        end
+    end
+    if found == 0 then Log("Ремоуты не найдены!", "WARN") end
+
+    -- Атрибуты LocalPlayer
     local myAttrs = LocalPlayer:GetAttributes()
     local attrList = {}
-    for k, v in pairs(myAttrs) do table.insert(attrList, string.format("%s = %s", tostring(k), tostring(v))) end
-    if #attrList > 0 then Log("Атрибуты LocalPlayer: " .. table.concat(attrList, ", "), "INFO") end
+    for k, v in pairs(myAttrs) do
+        table.insert(attrList, string.format("%s=%s", tostring(k), tostring(v)))
+    end
+    Log("Атрибуты LocalPlayer: " .. (next(attrList) and table.concat(attrList, " | ") or "(нет)"), "INFO")
 
+    -- Атрибуты других игроков (ищем target/assassin)
     local targetAttrFound = false
     for _, plr in ipairs(Players:GetPlayers()) do
         if plr ~= LocalPlayer then
-            local pAttrs = plr:GetAttributes()
-            for k, v in pairs(pAttrs) do
-                if string.find(string.lower(tostring(k)), "target") or string.find(string.lower(tostring(k)), "assassin") then
-                    Log(string.format("🔥 НАЙДЕН АТРИБУТ У %s: %s = %s", plr.Name, tostring(k), tostring(v)), "SUCCESS")
+            for k, v in pairs(plr:GetAttributes()) do
+                local kl = string.lower(tostring(k))
+                if string.find(kl, "target") or string.find(kl, "assassin") or string.find(kl, "kill") then
+                    Log(string.format("🔥 АТРИБУТ %s у %s = %s", tostring(k), plr.Name, tostring(v)), "SUCCESS")
                     targetAttrFound = true
                 end
             end
         end
     end
-    if not targetAttrFound then Log("Атрибуты Target у других игроков скрыты сервером.", "WARN") end
-    UpdateStatus("Сниффер завершен", Color3.fromRGB(180, 220, 255))
+    if not targetAttrFound then Log("Атрибуты Target скрыты сервером.", "WARN") end
+
+    UpdateStatus("Инспекция завершена", Color3.fromRGB(180, 220, 255))
 end
 
 -- Привязка кнопок
@@ -637,7 +912,12 @@ end)
 BtnInspect.MouseButton1Click:Connect(InspectAssassinData)
 BtnSingle.MouseButton1Click:Connect(RunSingleTargetKill)
 BtnKill.MouseButton1Click:Connect(StartKillLoop)
-BtnClear.MouseButton1Click:Connect(ClearLogs)
+BtnClear.MouseButton1Click:Connect(function()
+    ClearLogs()
+    table.clear(rawLogLines)
+end)
+BtnRemoteSniffer.MouseButton1Click:Connect(StartSniffer)
+BtnCopyLog.MouseButton1Click:Connect(ExportLog)
 ToggleBtn.MouseButton1Click:Connect(function() SetLogsCollapsed(not isLogsCollapsed) end)
 
 local function Terminate()
@@ -645,7 +925,9 @@ local function Terminate()
     isTerminated = true
     isRunning = false
 
-    if chainConnection then chainConnection:Disconnect() end
+    StopKillLoop()
+    if snifferActive then StopSniffer() end
+
     for _, conn in ipairs(activeConnections) do
         if conn and conn.Connected then pcall(function() conn:Disconnect() end) end
     end
@@ -657,6 +939,9 @@ end
 
 CloseBtn.MouseButton1Click:Connect(Terminate)
 
-Log("MM2 Assassin Turbo v4.1 готов!", "SUCCESS")
-Log("Исправлен ступор: добавлен Auto-Retry до смены ника в TargetName.", "INFO")
-Log("• Нажмите '⚡ ТУРБО-ЦЕПОЧКА' — скосит всех без остановок!", "KILL")
+Log("MM2 Assassin Turbo v5.0 [NETWORK + REMOTE SNIFFER] готов!", "SUCCESS")
+Log("1. Прямой перехват пакетов ChangeTarget (0 мс задержки).", "INFO")
+Log("2. Двойная страховка: UI Watchdog + отслеживание RoundEndFade.", "INFO")
+Log("3. 🔴 REMOTE SNIFFER — перехват ВСЕХ OnClientEvent в реальном времени.", "INFO")
+Log("4. 📋 COPY/SAVE LOG — экспорт в mm2_remote_log.txt + буфер обмена.", "INFO")
+Log("• Нажмите '🔴 REMOTE SNIFFER' перед раундом, затем убей цель!", "REMOTE")
