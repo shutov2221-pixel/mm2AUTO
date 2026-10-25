@@ -886,15 +886,22 @@ ScreenGui.Parent = GetSafeGuiParent()
 ScreenGui.ResetOnSpawn = false
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
 
+-- Масштаб интерфейса (0.5 = уменьшен в 2 раза)
+local UI_SCALE = 0.5
+
 local MainFrame = Instance.new("Frame", ScreenGui)
 MainFrame.Name = "MainFrame"
 MainFrame.Size = UDim2.new(0, 320, 0, 360)
-MainFrame.Position = UDim2.new(0.5, -160, 0.4, -150)
+MainFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+MainFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
 MainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
 MainFrame.BorderSizePixel = 0
 MainFrame.ClipsDescendants = true
 MainFrame.Active = true
 Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
+
+local MainScale = Instance.new("UIScale", MainFrame)
+MainScale.Scale = UI_SCALE
 
 local TitleBar = Instance.new("Frame", MainFrame)
 TitleBar.Name = "TitleBar"
