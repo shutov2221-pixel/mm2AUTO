@@ -41,8 +41,8 @@ ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = GetSafeGuiParent()
 
 local WINDOW_WIDTH = 370
-local EXPANDED_HEIGHT = 355
-local COLLAPSED_HEIGHT = 188
+local EXPANDED_HEIGHT = 405
+local COLLAPSED_HEIGHT = 242
 local isLogsCollapsed = false
 
 local MainFrame = Instance.new("Frame")
@@ -123,7 +123,7 @@ end)
 
 -- Контейнер кнопок
 local ControlsFrame = Instance.new("Frame")
-ControlsFrame.Size = UDim2.new(1, -16, 0, 115)
+ControlsFrame.Size = UDim2.new(1, -16, 0, 144)
 ControlsFrame.Position = UDim2.new(0, 8, 0, 36)
 ControlsFrame.BackgroundTransparency = 1
 ControlsFrame.Parent = MainFrame
@@ -156,12 +156,35 @@ local BtnKill = CreateButton("⚡ ТУРБО-ЦЕПОЧКА (AUTO-KILL)", Color3
 local BtnRemoteSniffer = CreateButton("🔴 REMOTE SNIFFER", Color3.fromRGB(140, 40, 160), UDim2.new(0, 0, 0, 58), UDim2.new(0.55, -2, 0, 26))
 local BtnCopyLog = CreateButton("📋 COPY/SAVE LOG", Color3.fromRGB(50, 80, 130), UDim2.new(0.55, 2, 0, 58), UDim2.new(0.45, -2, 0, 26))
 
--- Ряд 4: Тест RemoteFunction EliminatePlayer
-local BtnTestRF = CreateButton("🧪 ТЕСТ RF (ELIMINATE)", Color3.fromRGB(180, 50, 120), UDim2.new(0, 0, 0, 87), UDim2.new(1, 0, 0, 26))
+-- Ряд 4: Поле ввода ника читера + Кнопка слежки
+local SpyInput = Instance.new("TextBox")
+SpyInput.Name = "SpyInput"
+SpyInput.Size = UDim2.new(0.58, -2, 0, 26)
+SpyInput.Position = UDim2.new(0, 0, 0, 87)
+SpyInput.BackgroundColor3 = Color3.fromRGB(26, 26, 36)
+SpyInput.TextColor3 = Color3.fromRGB(255, 255, 255)
+SpyInput.PlaceholderColor3 = Color3.fromRGB(130, 130, 150)
+SpyInput.PlaceholderText = "Ник читера (thunderpro...)"
+SpyInput.Font = Enum.Font.GothamSemibold
+SpyInput.TextSize = 10
+SpyInput.ClearTextOnFocus = false
+SpyInput.Text = ""
+SpyInput.Parent = ControlsFrame
+Instance.new("UICorner", SpyInput).CornerRadius = UDim.new(0, 6)
+
+local SpyStroke = Instance.new("UIStroke", SpyInput)
+SpyStroke.Color = Color3.fromRGB(70, 70, 100)
+SpyStroke.Thickness = 1
+
+local BtnSpyToggle = CreateButton("🕵️ СЛЕЖКА: ВЫКЛ", Color3.fromRGB(150, 45, 120), UDim2.new(0.58, 2, 0, 87), UDim2.new(0.42, -2, 0, 26))
+
+-- Ряд 5: Авто-поиск подозрительного читера + Тест RF
+local BtnFindCheater = CreateButton("⚡ НАЙТИ ЧИТЕРА (АВТО)", Color3.fromRGB(180, 80, 20), UDim2.new(0, 0, 0, 116), UDim2.new(0.58, -2, 0, 26))
+local BtnTestRF = CreateButton("🧪 ТЕСТ RF", Color3.fromRGB(75, 50, 95), UDim2.new(0.58, 2, 0, 116), UDim2.new(0.42, -2, 0, 26))
 
 local StatusFrame = Instance.new("Frame")
 StatusFrame.Size = UDim2.new(1, -16, 0, 22)
-StatusFrame.Position = UDim2.new(0, 8, 0, 155)
+StatusFrame.Position = UDim2.new(0, 8, 0, 184)
 StatusFrame.BackgroundColor3 = Color3.fromRGB(26, 26, 34)
 StatusFrame.Parent = MainFrame
 Instance.new("UICorner", StatusFrame).CornerRadius = UDim.new(0, 5)
@@ -186,7 +209,7 @@ end
 -- Консоль логов
 local ConsoleFrame = Instance.new("Frame")
 ConsoleFrame.Size = UDim2.new(1, -16, 0, 160)
-ConsoleFrame.Position = UDim2.new(0, 8, 0, 182)
+ConsoleFrame.Position = UDim2.new(0, 8, 0, 210)
 ConsoleFrame.BackgroundColor3 = Color3.fromRGB(14, 14, 18)
 ConsoleFrame.Parent = MainFrame
 Instance.new("UICorner", ConsoleFrame).CornerRadius = UDim.new(0, 6)
@@ -247,6 +270,15 @@ local function Log(message: string, msgType: string?)
     elseif msgType == "REMOTE" then
         color = Color3.fromRGB(255, 140, 50)
         prefix = "[REMOTE]"
+    elseif msgType == "SPY" then
+        color = Color3.fromRGB(235, 110, 215)
+        prefix = "[SPY]"
+    elseif msgType == "FLASH" then
+        color = Color3.fromRGB(255, 60, 80)
+        prefix = "[FLASH]"
+    elseif msgType == "TP" then
+        color = Color3.fromRGB(50, 220, 255)
+        prefix = "[TP]"
     end
 
     local timeStr = os.date("%H:%M:%S")
@@ -1049,6 +1081,232 @@ local function RunTestEliminate()
     end
 end
 
+-- =====================================================================
+-- ДЕТЕКТОР СЛЕЖКИ ЗА ЧИТЕРАМИ (CHEATER SPY & TELEPORT / FLASH-EQUIP)
+-- =====================================================================
+local spyActive = false
+local spyTargetPlayer: Player? = nil
+local spyConnections: { RBXScriptConnection } = {}
+local spyLastEquipTick = 0
+local spyLastToolName = ""
+local spyLastPos: Vector3? = nil
+local spyLastPosTick = 0
+local spyIsUnderMap = false
+local spyCoinsCollectedCount = 0
+
+local function StopSpy()
+    spyActive = false
+    spyTargetPlayer = nil
+    spyLastPos = nil
+    spyIsUnderMap = false
+    spyCoinsCollectedCount = 0
+
+    for _, c in ipairs(spyConnections) do
+        if c and c.Connected then pcall(function() c:Disconnect() end) end
+    end
+    table.clear(spyConnections)
+
+    BtnSpyToggle.Text = "🕵️ СЛЕЖКА: ВЫКЛ"
+    BtnSpyToggle.BackgroundColor3 = Color3.fromRGB(150, 45, 120)
+    Log("--- СЛЕЖКА ЗА ЧИТЕРОМ ОСТАНОВЛЕНА ---", "SPY")
+    UpdateStatus("Слежка остановлена", Color3.fromRGB(200, 200, 200))
+end
+
+local function HookSpyCharacter(char: Model, plr: Player)
+    -- Проверка уже имеющихся предметов при старте
+    for _, item in ipairs(char:GetChildren()) do
+        if item:IsA("Tool") then
+            Log(string.format("🕵️ [SPY] У %s УЖЕ В РУКЕ: '%s'", plr.Name, item.Name), "SPY")
+        end
+    end
+
+    -- 1. Детектор микро-экипировки (ChildAdded)
+    local addConn = char.ChildAdded:Connect(function(child)
+        if not spyActive then return end
+        if child:IsA("Tool") then
+            spyLastEquipTick = tick()
+            spyLastToolName = child.Name
+            Log(string.format("👀 [SPY] %s ДОСТАЛ: '%s' (%s)", plr.Name, child.Name, os.date("%H:%M:%S")), "SPY")
+        end
+    end)
+    table.insert(spyConnections, addConn)
+
+    -- 2. Детектор Flash-Equip (ChildRemoved)
+    local remConn = char.ChildRemoved:Connect(function(child)
+        if not spyActive then return end
+        if child:IsA("Tool") then
+            local durationMs = math.floor((tick() - spyLastEquipTick) * 1000)
+            if durationMs <= 70 then
+                -- FLASH-EQUIP: Нож был в руках меньше 70 миллисекунд! Глаз человека не видит.
+                Log(string.format("⚡🔥 [FLASH-EQUIP] %s СКРЫТЫЙ УДАР! Держал '%s' всего %d мс!", plr.Name, child.Name, durationMs), "FLASH")
+            else
+                Log(string.format("👀 [SPY] %s убрал '%s' (держал %d мс)", plr.Name, child.Name, durationMs), "SPY")
+            end
+        end
+    end)
+    table.insert(spyConnections, remConn)
+
+    local hrp = char:FindFirstChild("HumanoidRootPart") :: BasePart?
+    if hrp then
+        spyLastPos = hrp.Position
+        spyLastPosTick = tick()
+    end
+end
+
+local function StartSpy(targetPlr: Player)
+    if spyActive then
+        StopSpy()
+        if spyTargetPlayer == targetPlr then return end
+    end
+
+    spyActive = true
+    spyTargetPlayer = targetPlr
+    spyLastPos = nil
+    spyIsUnderMap = false
+    spyCoinsCollectedCount = 0
+
+    BtnSpyToggle.Text = "🟢 СЛЕЖКА: " .. targetPlr.Name:sub(1, 10)
+    BtnSpyToggle.BackgroundColor3 = Color3.fromRGB(40, 160, 60)
+    Log(string.format("--- 🕵️ СЛЕЖКА АКТИВНА: %s (@%s) ---", targetPlr.DisplayName, targetPlr.Name), "SPY")
+    UpdateStatus("Слежка за: " .. targetPlr.DisplayName, Color3.fromRGB(240, 110, 215))
+
+    -- Подключаем текущего персонажа
+    if targetPlr.Character then
+        HookSpyCharacter(targetPlr.Character, targetPlr)
+    end
+
+    -- Подключаем респавн
+    local charAddedConn = targetPlr.CharacterAdded:Connect(function(newChar)
+        if not spyActive then return end
+        Log(string.format("🕵️ [SPY] %s заспавнился", targetPlr.Name), "SPY")
+        task.wait(0.05)
+        HookSpyCharacter(newChar, targetPlr)
+    end)
+    table.insert(spyConnections, charAddedConn)
+
+    -- 3. Корреляция с убийствами (KillEvent)
+    local killEvent = FindRemoteEvent("KillEvent")
+    if killEvent then
+        local kConn = killEvent.OnClientEvent:Connect(function(victimName: any)
+            if not spyActive or not spyTargetPlayer then return end
+            local now = tick()
+            local diffMs = math.floor((now - spyLastEquipTick) * 1000)
+            if diffMs <= 350 then
+                Log(string.format("💀 [SPY-KILL] %s ЛИКВИДИРОВАЛ '%s'! (Нож взведён %d мс назад)", spyTargetPlayer.Name, tostring(victimName or "Игрока"), diffMs), "FLASH")
+            end
+        end)
+        table.insert(spyConnections, kConn)
+    end
+
+    -- 4. Слежка за сбором монет (CoinContainer в Workspace)
+    local map = nil
+    for _, v in ipairs(Workspace:GetChildren()) do
+        if v:FindFirstChild("CoinContainer") then
+            map = v
+            break
+        end
+    end
+    local coinContainer = map and map:FindFirstChild("CoinContainer")
+    if coinContainer then
+        local coinConn = coinContainer.ChildRemoved:Connect(function(coin)
+            if not spyActive or not spyTargetPlayer then return end
+            local char = spyTargetPlayer.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+            local coinPart = coin:IsA("BasePart") and coin or coin:FindFirstChildWhichIsA("BasePart")
+            if hrp and coinPart then
+                local dist = (coinPart.Position - hrp.Position).Magnitude
+                if dist <= 20 then
+                    spyCoinsCollectedCount = spyCoinsCollectedCount + 1
+                    if spyCoinsCollectedCount % 5 == 0 or spyCoinsCollectedCount == 1 then
+                        Log(string.format("🪙 [SPY-COIN] %s собрал монеты (Всего: %d шт, дистанция: %.1f ст)", spyTargetPlayer.Name, spyCoinsCollectedCount, dist), "SPY")
+                    end
+                end
+            end
+        end)
+        table.insert(spyConnections, coinConn)
+    end
+
+    -- 5. Цикл проверки координат: Телепорты и Уход под карту (50 Гц)
+    task.spawn(function()
+        while spyActive and not isTerminated do
+            task.wait(0.04)
+            if not spyTargetPlayer then break end
+            local char = spyTargetPlayer.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+            if hrp and hrp.Parent then
+                local currentPos = hrp.Position
+                local now = tick()
+
+                -- Проверка: уход в пустоту / под карту
+                if currentPos.Y < -20 then
+                    if not spyIsUnderMap then
+                        spyIsUnderMap = true
+                        Log(string.format("🕳️ [SPY-VOID] %s УШЁЛ ПОД КАРТУ! Y = %.1f (Неуязвим для ножей/пуль)", spyTargetPlayer.Name, currentPos.Y), "TP")
+                    end
+                else
+                    if spyIsUnderMap then
+                        spyIsUnderMap = false
+                        Log(string.format("⬆️ [SPY-VOID] %s вернулся на карту (Y = %.1f)", spyTargetPlayer.Name, currentPos.Y), "SPY")
+                    end
+                end
+
+                -- Проверка: мгновенный телепорт (рывок более 35 студов за 40 мс)
+                if spyLastPos then
+                    local dt = math.max(0.001, now - spyLastPosTick)
+                    local dist = (currentPos - spyLastPos).Magnitude
+                    local speed = dist / dt
+                    if dist > 35 and speed > 400 then
+                        Log(string.format("🚀 [SPY-TP] %s ТЕЛЕПОРТ! Сдвиг на %.1f ст (Скорость: %.0f ст/с)", spyTargetPlayer.Name, dist, speed), "TP")
+                    end
+                end
+
+                spyLastPos = currentPos
+                spyLastPosTick = now
+            end
+        end
+    end)
+end
+
+-- Авто-поиск подозрительного читера
+local function AutoDetectCheater()
+    Log("--- АВТО-СКАНИРОВАНИЕ НА ЧИТЕРОВ ---", "SPY")
+    local candidates = {}
+
+    -- 1. Сначала ищем по известным никам читеров
+    local knownCheaters = { "thunderpro1014", "feraltide17" }
+    for _, name in ipairs(knownCheaters) do
+        local pl = Players:FindFirstChild(name) or FindPlayerByName(name)
+        if pl and pl ~= LocalPlayer then
+            table.insert(candidates, { player = pl, reason = "Известный читер из логов" })
+        end
+    end
+
+    -- 2. Сканируем аномалии у остальных игроков
+    for _, pl in ipairs(Players:GetPlayers()) do
+        if pl ~= LocalPlayer then
+            local char = pl.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+            if hrp then
+                if hrp.Position.Y < -20 then
+                    table.insert(candidates, { player = pl, reason = string.format("Летает под картой (Y: %.1f)", hrp.Position.Y) })
+                elseif hrp.Position.Y > 120 then
+                    table.insert(candidates, { player = pl, reason = string.format("Парит высоко в небе (Y: %.1f)", hrp.Position.Y) })
+                end
+            end
+        end
+    end
+
+    if #candidates > 0 then
+        local chosen = candidates[1]
+        SpyInput.Text = chosen.player.Name
+        Log(string.format("🎯 НАЙДЕН ЧИТЕР: %s (@%s) [%s]", chosen.player.DisplayName, chosen.player.Name, chosen.reason), "FLASH")
+        StartSpy(chosen.player)
+    else
+        Log("Подозрительных игроков под картой не найдено. Введите ник вручную в поле выше.", "WARN")
+        UpdateStatus("Читер не найден авто-сканом", Color3.fromRGB(255, 180, 50))
+    end
+end
+
 -- Привязка кнопок
 BtnScan.MouseButton1Click:Connect(RunTargetScan)
 BtnEquip.MouseButton1Click:Connect(function()
@@ -1068,6 +1326,27 @@ end)
 BtnRemoteSniffer.MouseButton1Click:Connect(StartSniffer)
 BtnCopyLog.MouseButton1Click:Connect(ExportLog)
 BtnTestRF.MouseButton1Click:Connect(RunTestEliminate)
+BtnSpyToggle.MouseButton1Click:Connect(function()
+    if spyActive then
+        StopSpy()
+    else
+        local text = SpyInput.Text
+        local clean = CleanNickname(text)
+        if clean == "" then
+            Log("Введите ник читера в поле слева!", "WARN")
+            UpdateStatus("Введите ник читера", Color3.fromRGB(255, 180, 50))
+            return
+        end
+        local plr = FindPlayerByName(clean)
+        if not plr then
+            Log("Игрок с ником '" .. clean .. "' не найден!", "ERROR")
+            UpdateStatus("Игрок не найден", Color3.fromRGB(255, 80, 80))
+            return
+        end
+        StartSpy(plr)
+    end
+end)
+BtnFindCheater.MouseButton1Click:Connect(AutoDetectCheater)
 ToggleBtn.MouseButton1Click:Connect(function() SetLogsCollapsed(not isLogsCollapsed) end)
 
 local function Terminate()
@@ -1077,6 +1356,7 @@ local function Terminate()
 
     StopKillLoop()
     if snifferActive then StopSniffer() end
+    if spyActive then StopSpy() end
 
     for _, conn in ipairs(activeConnections) do
         if conn and conn.Connected then pcall(function() conn:Disconnect() end) end
@@ -1089,9 +1369,9 @@ end
 
 CloseBtn.MouseButton1Click:Connect(Terminate)
 
-Log("MM2 Assassin Turbo v6.0 [PRE-SELECT + INSTANT NETWORK] готов!", "SUCCESS")
-Log("1. Предвидение 1-й цели из RoleSelect за 10с до раунда (0 мс).", "INFO")
-Log("2. Мгновенная реакция на ChangeTarget по UserId (0 мс без строковых задержек).", "INFO")
-Log("3. Авто-удар при получении ножа (GiveWeapon) и старте (RoundStart).", "INFO")
-Log("4. Частота Watchdog повышена до 50 Гц (шаг 0.02с).", "INFO")
-Log("• Нажмите '⚡ ТУРБО-ЦЕПОЧКА' — скосит всех мгновенно!", "KILL")
+Log("MM2 Assassin Turbo v7.0 [NETWORK TURBO + CHEATER SPY] готов!", "SUCCESS")
+Log("1. 🕵️ СЛЕЖКА ЗА ЧИТЕРОМ: введи ник или нажми '⚡ НАЙТИ ЧИТЕРА (АВТО)'.", "SPY")
+Log("2. Фиксирует Flash-Equip (доставание ножа на 10-50 мс, невидимое глазу).", "FLASH")
+Log("3. Фиксирует телепорты рывками и уход в пустоту под карту.", "TP")
+Log("4. Отслеживает сбор монет и привязку убийств к читеру.", "INFO")
+Log("• Для авто-килла используйте кнопку '⚡ ТУРБО-ЦЕПОЧКА'!", "KILL")
