@@ -1,0 +1,55 @@
+-- === REMOTE SPY / KILL REMOTE FINDER ===
+local Players = game:GetService("Players")
+local RS = game:GetService("ReplicatedStorage")
+
+-- 1. Скан ReplicatedStorage на подозрительные имена
+local SUSPECT = { "knife", "hit", "kill", "damage", "stab", "attack", "murder", "slash", "weapon" }
+print("=== SUSPICIOUS REMOTES IN ReplicatedStorage ===")
+for _, obj in ipairs(RS:GetDescendants()) do
+    if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") or obj:IsA("UnreliableRemoteEvent") then
+        local n = string.lower(obj.Name)
+        for _, k in ipairs(SUSPECT) do
+            if string.find(n, k, 1, true) then
+                print("[SUSPECT]", obj:GetFullName(), "|", obj.ClassName)
+                break
+            end
+        end
+    end
+end
+
+-- 2. Хук на все вызовы remote'ов
+local function describe(v)
+    if typeof(v) == "Instance" then
+        return v:GetFullName() .. " [" .. v.ClassName .. "]"
+    elseif typeof(v) == "CFrame" or typeof(v) == "Vector3" then
+        return tostring(v)
+    elseif typeof(v) == "table" then
+        local parts = {}
+        for k, val in pairs(v) do
+            parts[#parts+1] = tostring(k).."="..tostring(val)
+        end
+        return "{"..table.concat(parts, ", ").."}"
+    else
+        return tostring(v) .. " [" .. typeof(v) .. "]"
+    end
+end
+
+local oldNamecall
+oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+    local method = getnamecallmethod()
+    if (method == "FireServer" or method == "InvokeServer") and typeof(self) == "Instance" then
+        if self:IsA("RemoteEvent") or self:IsA("RemoteFunction") or self:IsA("UnreliableRemoteEvent") then
+            local args = { ... }
+            local desc = {}
+            for i = 1, #args do
+                desc[i] = "["..i.."] "..describe(args[i])
+            end
+            print(string.format("[REMOTE] %s :: %s\n    args: %s",
+                method, self:GetFullName(),
+                #desc > 0 and table.concat(desc, "\n          ") or "(none)"))
+        end
+    end
+    return oldNamecall(self, ...)
+end)
+
+print("=== HOOK ACTIVE. Now equip knife and stab someone. ===")
