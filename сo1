@@ -24,12 +24,38 @@ end
 -- =====================================================================
 -- ПОИСК БЕЗОПАСНОГО РОДИТЕЛЯ GUI
 -- =====================================================================
-local function GetSafeGuiParent(): Instance
-    local success, result = pcall(function() return gethui() end)
-    if success and result then return result end
-    local coreSuccess, coreResult = pcall(function() return game:GetService("CoreGui") end)
-    if coreSuccess and coreResult then return coreResult end
-    return LocalPlayer:WaitForChild("PlayerGui")
+local function SafeParentGui(gui: ScreenGui, guiName: string)
+    local function cleanOld(parent: Instance?)
+        if parent then
+            local old = parent:FindFirstChild(guiName)
+            if old and old ~= gui then
+                pcall(function() old:Destroy() end)
+            end
+        end
+    end
+
+    -- 1. Проверяем gethui()
+    local okHui, hui = pcall(function() return gethui and gethui() end)
+    if okHui and typeof(hui) == "Instance" then
+        cleanOld(hui)
+        local okP = pcall(function() gui.Parent = hui end)
+        if okP and gui.Parent == hui then return end
+    end
+
+    -- 2. Проверяем CoreGui через pcall реального присвоения (не крашит если нет прав)
+    local okCore, core = pcall(function() return game:GetService("CoreGui") end)
+    if okCore and typeof(core) == "Instance" then
+        cleanOld(core)
+        local okP = pcall(function() gui.Parent = core end)
+        if okP and gui.Parent == core then return end
+    end
+
+    -- 3. Безотказный PlayerGui
+    local pGui = LocalPlayer:FindFirstChildOfClass("PlayerGui") or LocalPlayer:WaitForChild("PlayerGui", 5)
+    if pGui then
+        cleanOld(pGui)
+        pcall(function() gui.Parent = pGui end)
+    end
 end
 
 -- =====================================================================
@@ -37,9 +63,10 @@ end
 -- =====================================================================
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "MM2_CoinLog_Gui"
-ScreenGui.Parent = GetSafeGuiParent()
 ScreenGui.ResetOnSpawn = false
+ScreenGui.DisplayOrder = 9999
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
+SafeParentGui(ScreenGui, "MM2_CoinLog_Gui")
 
 local UI_SCALE = 0.65 -- Компактный размер для удобства ручной игры
 
