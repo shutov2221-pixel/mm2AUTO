@@ -1706,6 +1706,15 @@ local function CollectCoins()
         char = rt:Character()
         if not char or not char.PrimaryPart then break end
 
+        -- Если контейнер монет потерян/пересоздан во время раунда, переподключаем его
+        if not rt.coinContainer or not rt.coinContainer.Parent then
+            local currentMap = rt:Map()
+            if currentMap then
+                rt.coinContainer = currentMap:FindFirstChild("CoinContainer")
+                if rt.coinContainer then PopulateCoins() end
+            end
+        end
+
         local targetCoin = GetNearestCoin()
 
         if targetCoin then
@@ -1794,30 +1803,9 @@ local function WaitingForRound()
     BagIsFull = false
     UpdateStatus("Фарм: Ожидание начала раунда", Color3.fromRGB(150, 150, 150))
 
-    if RoundInProgress() and rt:CheckIfPlayerWasInARound() then
-        ChangeState(State.Action)
-        return
-    end
-
-    local roundReady = false
-    local mapConn
-    mapConn = Workspace.ChildAdded:Connect(function(child)
-        if not SETTINGS.AutoFarmEnabled or IsTerminated then return end
-        task.delay(0.1, function()
-            if child:FindFirstChild("CoinContainer") and rt:CheckIfPlayerWasInARound() then
-                roundReady = true
-            end
-        end)
-    end)
-
     repeat
-        task.wait(0.3)
-        if RoundInProgress() and rt:CheckIfPlayerWasInARound() then
-            roundReady = true
-        end
-    until roundReady or not SETTINGS.AutoFarmEnabled or IsTerminated
-
-    mapConn:Disconnect()
+        task.wait(0.25)
+    until (RoundInProgress() and rt:CheckIfPlayerWasInARound()) or not SETTINGS.AutoFarmEnabled or IsTerminated
 
     if not SETTINGS.AutoFarmEnabled or IsTerminated then return end
     ChangeState(State.Action)
@@ -1825,9 +1813,12 @@ end
 
 local function waitForRoundEnd()
     Working = false
+    BagIsFull = false
     UpdateStatus("Фарм: Ожидание конца игры", Color3.fromRGB(255, 150, 50))
     repeat
-        task.wait(1)
+        task.wait(0.5)
+        -- Если раунд уже начался заново (выдан атрибут Alive), сразу переходим к действию
+        if rt:CheckIfPlayerWasInARound() then break end
     until not RoundInProgress() or not SETTINGS.AutoFarmEnabled or IsTerminated
 
     if not SETTINGS.AutoFarmEnabled or IsTerminated then return end
