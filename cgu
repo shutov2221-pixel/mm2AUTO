@@ -1,0 +1,270 @@
+--!nocheck
+-- =====================================================================
+-- LOG MIRROR GUI (SEPARATE SCRIPT)
+-- Хукает print/warn/error, выводит в скроллируемое окно.
+-- Кнопки: КОПИРОВАТЬ (все логи) / ОЧИСТИТЬ / ЗАКРЫТЬ.
+-- =====================================================================
+
+local Players            = game:GetService("Players")
+local UserInputService   = game:GetService("UserInputService")
+
+local LocalPlayer = Players.LocalPlayer
+
+local function getSafeParent()
+    local ok, hui = pcall(function() return gethui() end)
+    if ok and hui then return hui end
+    local ok2, core = pcall(function() return game:GetService("CoreGui") end)
+    if ok2 and core then return core end
+    return LocalPlayer:WaitForChild("PlayerGui")
+end
+
+-- ───────────── 0. Чистим предыдущий запуск (если был) ─────────────
+local genv = (getgenv and getgenv()) or _G
+if genv._LogMirrorCleanup then
+    pcall(genv._LogMirrorCleanup)
+end
+
+-- ───────────── 1. GUI ─────────────
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "LogMirror"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
+ScreenGui.Parent = getSafeParent()
+
+local Main = Instance.new("Frame")
+Main.Size = UDim2.new(0, 500, 0, 400)
+Main.AnchorPoint = Vector2.new(0.5, 0.5)
+Main.Position = UDim2.new(0.5, 0, 0.5, 0)
+Main.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+Main.BorderSizePixel = 0
+Main.ClipsDescendants = true
+Main.Active = true
+Main.Parent = ScreenGui
+Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 8)
+
+local TitleBar = Instance.new("Frame")
+TitleBar.Size = UDim2.new(1, 0, 0, 32)
+TitleBar.BackgroundColor3 = Color3.fromRGB(45, 125, 245)
+TitleBar.BorderSizePixel = 0
+TitleBar.Active = true
+TitleBar.Parent = Main
+
+local TitleLabel = Instance.new("TextLabel")
+TitleLabel.Size = UDim2.new(1, -12, 1, 0)
+TitleLabel.Position = UDim2.new(0, 12, 0, 0)
+TitleLabel.BackgroundTransparency = 1
+TitleLabel.Text = "LOG MIRROR"
+TitleLabel.TextColor3 = Color3.new(1, 1, 1)
+TitleLabel.Font = Enum.Font.GothamBold
+TitleLabel.TextSize = 14
+TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+TitleLabel.Parent = TitleBar
+
+local ScrollFrame = Instance.new("ScrollingFrame")
+ScrollFrame.Size = UDim2.new(1, -10, 1, -80)
+ScrollFrame.Position = UDim2.new(0, 5, 0, 37)
+ScrollFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+ScrollFrame.BorderSizePixel = 0
+ScrollFrame.ScrollBarThickness = 6
+ScrollFrame.ScrollBarImageColor3 = Color3.fromRGB(80, 80, 100)
+ScrollFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+ScrollFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+ScrollFrame.Parent = Main
+Instance.new("UICorner", ScrollFrame).CornerRadius = UDim.new(0, 6)
+
+local Layout = Instance.new("UIListLayout")
+Layout.SortOrder = Enum.SortOrder.LayoutOrder
+Layout.Padding = UDim.new(0, 2)
+Layout.Parent = ScrollFrame
+
+local Pad = Instance.new("UIPadding")
+Pad.PaddingLeft = UDim.new(0, 4)
+Pad.PaddingRight = UDim.new(0, 4)
+Pad.PaddingTop = UDim.new(0, 4)
+Pad.PaddingBottom = UDim.new(0, 4)
+Pad.Parent = ScrollFrame
+
+local ButtonBar = Instance.new("Frame")
+ButtonBar.Size = UDim2.new(1, -10, 0, 35)
+ButtonBar.Position = UDim2.new(0, 5, 1, -42)
+ButtonBar.BackgroundTransparency = 1
+ButtonBar.Parent = Main
+
+local BtnLayout = Instance.new("UIListLayout")
+BtnLayout.FillDirection = Enum.FillDirection.Horizontal
+BtnLayout.Padding = UDim.new(0, 5)
+BtnLayout.Parent = ButtonBar
+
+local function makeBtn(text, color)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0.333, -3, 1, 0)
+    btn.BackgroundColor3 = color
+    btn.Text = text
+    btn.TextColor3 = Color3.new(1, 1, 1)
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 13
+    btn.Active = true
+    btn.Parent = ButtonBar
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+    return btn
+end
+
+local CopyBtn  = makeBtn("КОПИРОВАТЬ", Color3.fromRGB(60, 60, 70))
+local ClearBtn = makeBtn("ОЧИСТИТЬ",   Color3.fromRGB(200, 150, 50))
+local CloseBtn = makeBtn("ЗАКРЫТЬ",    Color3.fromRGB(200, 50, 50))
+
+-- ───────────── 2. Логи ─────────────
+local Logs = {}
+local MAX_LOGS = 500
+local destroyed = false
+
+local function addEntry(kind, text)
+    if destroyed then return end
+    if not ScrollFrame or not ScrollFrame.Parent then return end
+
+    local color = Color3.fromRGB(220, 220, 220)
+    local prefix = ""
+    if kind == "warn" then
+        color = Color3.fromRGB(255, 200, 80)
+        prefix = "[WARN] "
+    elseif kind == "error" then
+        color = Color3.fromRGB(255, 90, 90)
+        prefix = "[ERR] "
+    end
+
+    local entry = Instance.new("TextLabel")
+    entry.Size = UDim2.new(1, 0, 0, 0)
+    entry.AutomaticSize = Enum.AutomaticSize.Y
+    entry.BackgroundTransparency = 1
+    entry.Text = "[" .. os.date("%H:%M:%S") .. "] " .. prefix .. text
+    entry.TextColor3 = color
+    entry.Font = Enum.Font.Code
+    entry.TextSize = 12
+    entry.TextXAlignment = Enum.TextXAlignment.Left
+    entry.TextYAlignment = Enum.TextYAlignment.Top
+    entry.TextWrapped = true
+    entry.Parent = ScrollFrame
+
+    task.defer(function()
+        if ScrollFrame and ScrollFrame.Parent then
+            ScrollFrame.CanvasPosition = Vector2.new(0, 1e6)  -- скролл в низ
+        end
+    end)
+end
+
+local function addLog(kind, msg)
+    table.insert(Logs, { kind = kind, msg = msg, time = os.date("%H:%M:%S") })
+
+    -- Удалить самый старый, если переполнено
+    if #Logs > MAX_LOGS then
+        table.remove(Logs, 1)
+        for _, child in ipairs(ScrollFrame:GetChildren()) do
+            if child:IsA("TextLabel") then
+                child:Destroy()
+                break
+            end
+        end
+    end
+
+    addEntry(kind, msg)
+end
+
+-- ───────────── 3. Хук ─────────────
+local oldPrint = print
+local oldWarn  = warn
+local oldError = error
+
+local function stringify(...)
+    local args = { ... }
+    local parts = {}
+    for i = 1, #args do
+        parts[i] = tostring(args[i])
+    end
+    return table.concat(parts, " ")
+end
+
+genv.print = function(...)
+    addLog("info", stringify(...))
+    return oldPrint(...)
+end
+
+genv.warn = function(...)
+    addLog("warn", stringify(...))
+    return oldWarn(...)
+end
+
+genv.error = function(msg, level)
+    addLog("error", tostring(msg))
+    return oldError(msg, level)
+end
+
+-- ───────────── 4. Кнопки ─────────────
+CopyBtn.MouseButton1Click:Connect(function()
+    local lines = {}
+    for _, e in ipairs(Logs) do
+        table.insert(lines, "[" .. e.time .. "] [" .. string.upper(e.kind) .. "] " .. e.msg)
+    end
+    local fullText = table.concat(lines, "\n")
+    local setclip = setclipboard or toclipboard or (syn and syn.setclipboard)
+    if setclip then
+        pcall(setclip, fullText)
+    end
+end)
+
+ClearBtn.MouseButton1Click:Connect(function()
+    table.clear(Logs)
+    for _, child in ipairs(ScrollFrame:GetChildren()) do
+        if child:IsA("TextLabel") then
+            child:Destroy()
+        end
+    end
+end)
+
+-- Функция очистки — используется и кнопкой, и при повторном запуске скрипта
+local function cleanup()
+    if destroyed then return end
+    destroyed = true
+    genv.print = oldPrint
+    genv.warn  = oldWarn
+    genv.error = oldError
+    genv._LogMirrorCleanup = nil
+    if ScreenGui and ScreenGui.Parent then
+        ScreenGui:Destroy()
+    end
+end
+
+genv._LogMirrorCleanup = cleanup
+CloseBtn.MouseButton1Click:Connect(cleanup)
+
+-- ───────────── 5. Перетаскивание ─────────────
+local dragging = false
+local dragStart, startPos
+
+TitleBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = Main.Position
+    end
+end)
+
+TitleBar.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = false
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - dragStart
+        Main.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset + delta.X,
+            startPos.Y.Scale, startPos.Y.Offset + delta.Y
+        )
+    end
+end)
+
+print("[LogMirror] Активен. Все print/warn/error теперь зеркалятся в окно.")
