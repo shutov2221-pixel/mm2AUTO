@@ -419,7 +419,6 @@ local function InspectAndEquipKnife(): Tool?
     if hum then pcall(function() hum:EquipTool(knife) end) end
     if knife.Parent ~= char then pcall(function() knife.Parent = char end) end
 
-    task.wait(0.01)
     return knife
 end
 
@@ -493,6 +492,9 @@ local function FindRemoteEvent(name: string): RemoteEvent?
 end
 
 local networkTargetConn: RBXScriptConnection? = nil
+local roleSelectConn: RBXScriptConnection? = nil
+local giveWeaponConn: RBXScriptConnection? = nil
+local roundStartConn: RBXScriptConnection? = nil
 local roundEndConn: RBXScriptConnection? = nil
 local chainConnection: RBXScriptConnection? = nil
 local activeTargetPlayer: Player? = nil
@@ -505,18 +507,12 @@ local function StopKillLoop()
     activeTargetName = ""
     killAttemptsForTarget = 0
 
-    if networkTargetConn then
-        networkTargetConn:Disconnect()
-        networkTargetConn = nil
-    end
-    if roundEndConn then
-        roundEndConn:Disconnect()
-        roundEndConn = nil
-    end
-    if chainConnection then
-        chainConnection:Disconnect()
-        chainConnection = nil
-    end
+    if roleSelectConn then roleSelectConn:Disconnect(); roleSelectConn = nil end
+    if giveWeaponConn then giveWeaponConn:Disconnect(); giveWeaponConn = nil end
+    if roundStartConn then roundStartConn:Disconnect(); roundStartConn = nil end
+    if networkTargetConn then networkTargetConn:Disconnect(); networkTargetConn = nil end
+    if roundEndConn then roundEndConn:Disconnect(); roundEndConn = nil end
+    if chainConnection then chainConnection:Disconnect(); chainConnection = nil end
 
     BtnKill.Text = "⚡ ТУРБО-ЦЕПОЧКА"
     BtnKill.BackgroundColor3 = Color3.fromRGB(200, 45, 45)
@@ -580,21 +576,26 @@ local function StartKillLoop()
     BtnKill.Text = "⚡ СТОП ТУРБО"
     BtnKill.BackgroundColor3 = Color3.fromRGB(40, 180, 50)
     UpdateStatus("Сетевой Турбо-режим АКТИВЕН", Color3.fromRGB(100, 255, 100))
-    Log("--- СТАРТ СЕТЕВОЙ ТУРБО-ЦЕПОЧКИ v5.0 ---", "KILL")
+    Log("--- СТАРТ СЕТЕВОЙ ТУРБО-ЦЕПОЧКИ v6.0 ---", "KILL")
 
     task.spawn(function()
         local knife = InspectAndEquipKnife()
-        if not knife then
-            Log("Ошибка: Нож не найден!", "ERROR")
-            StopKillLoop()
-            return
+
+        -- Функция для безопасного получения актуального ножа
+        local function GetReadyKnife(): Tool?
+            local myChar = LocalPlayer.Character
+            if knife and knife.Parent == myChar then
+                return knife
+            end
+            knife = InspectAndEquipKnife() or knife
+            return knife
         end
 
-        -- 1. СЕТЕВОЙ ПЕРЕХВАТ: Слушаем ChangeTarget RemoteEvent (0 мс задержки)
-        local changeTargetEvent = FindRemoteEvent("ChangeTarget")
-        if changeTargetEvent then
-            if networkTargetConn then networkTargetConn:Disconnect() end
-            networkTargetConn = changeTargetEvent.OnClientEvent:Connect(function(targetName: any, _, _, targetUserId: any)
+        -- 1. СЕТЕВОЙ ПЕРЕХВАТ RoleSelect (Определение стартовой цели за 10с до раунда!)
+        local roleSelectEvent = FindRemoteEvent("RoleSelect")
+        if roleSelectEvent then
+            if roleSelectConn then roleSelectConn:Disconnect() end
+            roleSelectConn = roleSelectEvent.OnClientEvent:Connect(function(r1: any, _, _, _, r2: any, targetName: any, targetKnife: any, targetGun: any, targetUserId: any)
                 if not isRunning or isTerminated then return end
 
                 local targetPlr: Player? = nil
@@ -602,26 +603,84 @@ local function StartKillLoop()
                     targetPlr = Players:GetPlayerByUserId(targetUserId)
                 end
                 if not targetPlr and typeof(targetName) == "string" and targetName ~= "" then
-                    targetPlr = Players:FindFirstChild(targetName)
+                    targetPlr = Players:FindFirstChild(targetName) or FindPlayerByName(targetName)
                 end
 
                 if targetPlr then
                     activeTargetPlayer = targetPlr
-                    Log(string.format("📡 [СЕТЬ 0мс] Новый таргет: %s (@%s)", targetPlr.DisplayName, targetPlr.Name), "TARGET")
+                    activeTargetName = targetPlr.Name
+                    Log(string.format("🎯 [RoleSelect 0мс] Стартовая цель получена: %s (@%s)", targetPlr.DisplayName, targetPlr.Name), "TARGET")
+                    UpdateStatus("Стартовая цель: " .. targetPlr.DisplayName, Color3.fromRGB(70, 190, 255))
 
-                    local myChar = LocalPlayer.Character
-                    if knife.Parent ~= myChar then
-                        knife = InspectAndEquipKnife() or knife
+                    local currentKnife = GetReadyKnife()
+                    if currentKnife then
+                        AttackTargetPlayer(targetPlr, currentKnife)
                     end
-                    AttackTargetPlayer(targetPlr, knife)
                 end
             end)
-            Log("📡 Сетевой перехват [ChangeTarget] подключен (" .. changeTargetEvent.Name .. ")", "SUCCESS")
-        else
-            Log("Предупреждение: ChangeTarget не найден, работаем через UI", "WARN")
+            Log("📡 Сетевой перехват [RoleSelect] подключен (предвидение 1-й цели)", "SUCCESS")
         end
 
-        -- 2. СЕТЕВОЙ ПЕРЕХВАТ ОКОНЧАНИЯ РАУНДА (RoundEndFade)
+        -- 2. СЕТЕВОЙ ПЕРЕХВАТ GiveWeapon (Мгновенный удар при выдаче ножа)
+        local giveWeaponEvent = FindRemoteEvent("GiveWeapon")
+        if giveWeaponEvent then
+            if giveWeaponConn then giveWeaponConn:Disconnect() end
+            giveWeaponConn = giveWeaponEvent.OnClientEvent:Connect(function(weaponName: any)
+                if not isRunning or isTerminated then return end
+                if tostring(weaponName) == "Knife" or string.find(string.lower(tostring(weaponName or "")), "knife") then
+                    local currentKnife = GetReadyKnife()
+                    if currentKnife and activeTargetPlayer then
+                        Log("🗡 [GiveWeapon] Нож выдан сервером, мгновенный удар!", "KILL")
+                        AttackTargetPlayer(activeTargetPlayer, currentKnife)
+                    end
+                end
+            end)
+        end
+
+        -- 3. СЕТЕВОЙ ПЕРЕХВАТ RoundStart (Сигнал старта раунда)
+        local roundStartEvent = FindRemoteEvent("RoundStart")
+        if roundStartEvent then
+            if roundStartConn then roundStartConn:Disconnect() end
+            roundStartConn = roundStartEvent.OnClientEvent:Connect(function()
+                if not isRunning or isTerminated then return end
+                local currentKnife = GetReadyKnife()
+                if currentKnife and activeTargetPlayer then
+                    AttackTargetPlayer(activeTargetPlayer, currentKnife)
+                end
+            end)
+        end
+
+        -- 4. СЕТЕВОЙ ПЕРЕХВАТ ChangeTarget (Мгновенная сбыча следующей цели при каждом килле!)
+        local changeTargetEvent = FindRemoteEvent("ChangeTarget")
+        if changeTargetEvent then
+            if networkTargetConn then networkTargetConn:Disconnect() end
+            networkTargetConn = changeTargetEvent.OnClientEvent:Connect(function(targetName: any, targetKnife: any, targetGun: any, targetUserId: any)
+                if not isRunning or isTerminated then return end
+
+                local targetPlr: Player? = nil
+                -- Поиск O(1) по UserId без строковых задержек
+                if typeof(targetUserId) == "number" and targetUserId > 0 then
+                    targetPlr = Players:GetPlayerByUserId(targetUserId)
+                end
+                if not targetPlr and typeof(targetName) == "string" and targetName ~= "" then
+                    targetPlr = Players:FindFirstChild(targetName) or FindPlayerByName(targetName)
+                end
+
+                if targetPlr then
+                    activeTargetPlayer = targetPlr
+                    activeTargetName = targetPlr.Name
+                    Log(string.format("📡 [ChangeTarget 0мс] Новый таргет: %s (@%s)", targetPlr.DisplayName, targetPlr.Name), "TARGET")
+
+                    local currentKnife = GetReadyKnife()
+                    if currentKnife then
+                        AttackTargetPlayer(targetPlr, currentKnife)
+                    end
+                end
+            end)
+            Log("📡 Сетевой перехват [ChangeTarget] подключен (0 мс реакция)", "SUCCESS")
+        end
+
+        -- 5. СЕТЕВОЙ ПЕРЕХВАТ ОКОНЧАНИЯ РАУНДА (RoundEndFade)
         local roundEndEvent = FindRemoteEvent("RoundEndFade")
         if roundEndEvent then
             if roundEndConn then roundEndConn:Disconnect() end
@@ -634,25 +693,30 @@ local function StartKillLoop()
             end)
         end
 
-        -- 3. Резервный старт: сразу бьем цель из UI (если раунд уже начался до включения кнопки)
+        -- 6. Резервный старт из UI (если раунд уже идёт)
         local initialLabel = FindTargetLabel()
         if initialLabel and IsTargetVisible(initialLabel) then
-            AttackTargetFromLabel(initialLabel, knife)
+            local currentKnife = GetReadyKnife()
+            if currentKnife then
+                AttackTargetFromLabel(initialLabel, currentKnife)
+            end
         end
 
-        -- 4. Резервный слушатель UI (GetPropertyChangedSignal)
         if initialLabel then
             if chainConnection then chainConnection:Disconnect() end
             chainConnection = initialLabel:GetPropertyChangedSignal("Text"):Connect(function()
                 if not isRunning or isTerminated then return end
-                AttackTargetFromLabel(initialLabel, knife)
+                local currentKnife = GetReadyKnife()
+                if currentKnife then
+                    AttackTargetFromLabel(initialLabel, currentKnife)
+                end
             end)
         end
 
-        -- 5. Watchdog-цикл (гарантия добивания каждые 0.05с + проверка окончания)
+        -- 7. Ультра-быстрый Watchdog (каждые 0.02с добивание цели и контроль жизни)
         local emptyCounter = 0
         while isRunning and not isTerminated do
-            task.wait(0.05)
+            task.wait(0.02)
 
             local myChar = LocalPlayer.Character
             local myHum = myChar and myChar:FindFirstChildOfClass("Humanoid")
@@ -661,20 +725,21 @@ local function StartKillLoop()
                 break
             end
 
-            -- Убеждаемся что нож наготове
-            if knife.Parent ~= myChar then
-                knife = InspectAndEquipKnife() or knife
-            end
-
-            -- Авто-добивание: если цель еще жива, повторяем импульс
+            -- Авто-добивание: если цель жива, повторяем импульс
             if activeTargetPlayer and activeTargetPlayer.Character then
                 local hum = activeTargetPlayer.Character:FindFirstChildOfClass("Humanoid")
                 if hum and hum.Health > 0 then
-                    AttackTargetPlayer(activeTargetPlayer, knife)
+                    local currentKnife = GetReadyKnife()
+                    if currentKnife then
+                        AttackTargetPlayer(activeTargetPlayer, currentKnife)
+                    end
+                else
+                    -- Цель повержена, обнуляем ссылку и ждем ChangeTarget
+                    activeTargetPlayer = nil
                 end
             end
 
-            -- Проверяем UI на скрытие окна и окончание раунда
+            -- Проверка интерфейса как подстраховка
             local currentLabel = FindTargetLabel()
             local isVisible = IsTargetVisible(currentLabel)
             local raw = currentLabel and currentLabel.Text or ""
@@ -682,19 +747,21 @@ local function StartKillLoop()
 
             local hasTarget = isVisible and clean ~= "" and clean ~= "Label" and clean ~= "None"
 
-            if not hasTarget then
+            if not hasTarget and not activeTargetPlayer then
                 emptyCounter = emptyCounter + 1
-                -- Если окно таргета скрыто или цель отсутствует ~0.5 сек (10 тиков по 0.05с) — раунд окончен
-                if emptyCounter >= 10 then
+                -- Если целей нет более 0.3 сек (15 тиков по 0.02с) — раунд окончен
+                if emptyCounter >= 15 then
                     Log("Окно таргетов скрыто! Все игроки устранены.", "SUCCESS")
                     UpdateStatus("РАУНД ВЫИГРАН! Победа.", Color3.fromRGB(100, 255, 120))
                     break
                 end
             else
                 emptyCounter = 0
-                -- Если цель в UI есть, а сетевой таргет еще не привязан — атакуем по UI
                 if (not activeTargetPlayer or not activeTargetPlayer.Character) and currentLabel then
-                    AttackTargetFromLabel(currentLabel, knife)
+                    local currentKnife = GetReadyKnife()
+                    if currentKnife then
+                        AttackTargetFromLabel(currentLabel, currentKnife)
+                    end
                 end
             end
         end
@@ -1022,9 +1089,9 @@ end
 
 CloseBtn.MouseButton1Click:Connect(Terminate)
 
-Log("MM2 Assassin Turbo v5.0 [NETWORK + REMOTE SNIFFER] готов!", "SUCCESS")
-Log("1. Прямой перехват пакетов ChangeTarget (0 мс задержки).", "INFO")
-Log("2. Двойная страховка: UI Watchdog + отслеживание RoundEndFade.", "INFO")
-Log("3. 🔴 REMOTE SNIFFER — перехват ВСЕХ OnClientEvent в реальном времени.", "INFO")
-Log("4. 📋 COPY/SAVE LOG — экспорт в mm2_remote_log.txt + буфер обмена.", "INFO")
-Log("• Нажмите '🔴 REMOTE SNIFFER' перед раундом, затем убей цель!", "REMOTE")
+Log("MM2 Assassin Turbo v6.0 [PRE-SELECT + INSTANT NETWORK] готов!", "SUCCESS")
+Log("1. Предвидение 1-й цели из RoleSelect за 10с до раунда (0 мс).", "INFO")
+Log("2. Мгновенная реакция на ChangeTarget по UserId (0 мс без строковых задержек).", "INFO")
+Log("3. Авто-удар при получении ножа (GiveWeapon) и старте (RoundStart).", "INFO")
+Log("4. Частота Watchdog повышена до 50 Гц (шаг 0.02с).", "INFO")
+Log("• Нажмите '⚡ ТУРБО-ЦЕПОЧКА' — скосит всех мгновенно!", "KILL")
