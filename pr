@@ -1,0 +1,858 @@
+--!strict
+-- === НАСТРОЙКИ СИСТЕМЫ И ПЕРЕМЕННЫЕ ===
+local SETTINGS = {
+AutoFarmEnabled = false,
+Speed = 22,
+FpsCap = 30,
+Radius = 200,
+PotatoMode = false
+}
+
+local StatsData = {
+StartTime = 0,
+CoinsCollected = 0,
+LastRoundCoins = 0
+}
+
+-- === ВСТРОЕННЫЙ МОДУЛЬ OCTREE ===
+local Octree = (function()
+local MAX_SUB_REGIONS = 4
+local DEFAULT_TOP_REGION_SIZE = 512
+
+local function IsPointInBox(point, boxCenter, boxSize)
+local half = boxSize / 2
+return point.X >= boxCenter.X - half and point.X <= boxCenter.X + half
+and point.Y >= boxCenter.Y - half and point.Y <= boxCenter.Y + half
+and point.Z >= boxCenter.Z - half and point.Z <= boxCenter.Z + half
+end
+
+local function RoundTo(x, mult)
+return math.round(x / mult) * mult
+end
+
+local function SwapRemove(tbl, index)
+local n = #tbl
+tbl[index] = tbl[n]
+tbl[n] = nil
+end
+
+local function CountNodesInRegion(region)
+local n = 0
+if region.Nodes then return #region.Nodes else
+for _, subRegion in ipairs(region.Regions) do n += CountNodesInRegion(subRegion) end
+end
+return n
+end
+
+local function GetTopRegion(octree, position, create)
+local size = octree.Size
+local origin = Vector3.new(RoundTo(position.X, size), RoundTo(position.Y, size), RoundTo(position.Z, size))
+local region = octree.Regions[origin]
+if not region and create then
+region = { Regions = {}, Level = 1, Size = size, Radius = math.sqrt(size * size * 3), Center = origin }
+table.freeze(region)
+octree.Regions[origin] = region
+end
+return region
+end
+
+local function GetRegionsInRadius(octree, position, radius)
+local regionsFound = {}
+local function ScanRegions(regions)
+for _, region in ipairs(regions) do
+local distance = (position - region.Center).Magnitude
+if distance < (radius + region.Radius) then
+if region.Nodes then table.insert(regionsFound, region) else ScanRegions(region.Regions) end
+end
+end
+end
+local startRegions = {}
+local size = octree.Size
+local maxOffset = math.ceil(radius / size)
+
+if radius < size then
+    for i = 0, 26 do
+        local x, y, z = i % 3 - 1, math.floor(i / 9) - 1, math.floor(i / 3) % 3 - 1
+        local startRegion = GetTopRegion(octree, position + Vector3.new(x * radius, y * radius, z * radius), false)
+        if startRegion and not startRegions[startRegion] then
+            startRegions[startRegion] = true
+            ScanRegions(startRegion.Regions)
+        end
+    end
+elseif maxOffset <= 3 then
+    for x = -maxOffset, maxOffset do
+        for y = -maxOffset, maxOffset do
+            for z = -maxOffset, maxOffset do
+                local startRegion = GetTopRegion(octree, position + Vector3.new(x * size, y * size, z * size), false)
+                if startRegion and not startRegions[startRegion] then
+                    startRegions[startRegion] = true
+                    ScanRegions(startRegion.Regions)
+                end
+            end
+        end
+    end
+else
+    for _, region in octree.Regions do
+        if (position - region.Center).Magnitude < (radius + region.Radius) then ScanRegions(region.Regions) end
+    end
+end
+return regionsFound
+
+
+end
+
+local OctreeClass = {}
+OctreeClass.__index = OctreeClass
+
+local function CreateOctree(topRegionSize)
+local self = setmetatable({}, OctreeClass)
+self.Size = topRegionSize or DEFAULT_TOP_REGION_SIZE
+self.Regions = {}
+return self
+end
+
+function OctreeClass:ClearAllNodes() table.clear(self.Regions) end
+
+function OctreeClass:GetAllNodes()
+local all = {}
+local function GetNodes(regions)
+for _, region in regions do
+if region.Nodes then
+table.move(region.Nodes, 1, #region.Nodes, #all + 1, all)
+else GetNodes(region.Regions) end
+end
+end
+GetNodes(self.Regions)
+return all
+end
+
+function OctreeClass:CreateNode(position, object)
+local region = self:_getRegion(MAX_SUB_REGIONS, position)
+local node = { Region = region, Position = position, Object = object }
+table.insert(region.Nodes, node)
+return node
+end
+
+function OctreeClass:FindFirstNode(object)
+for _, node in ipairs(self:GetAllNodes()) do
+if node.Object == object then return node end
+end
+return nil
+end
+
+function OctreeClass:RemoveNode(node)
+if not node.Region then return end
+local nodes = node.Region.Nodes
+local index = table.find(nodes, node)
+if index then SwapRemove(nodes, index) end
+node.Region = nil
+end
+
+function OctreeClass:SearchRadius(position, radius)
+local nodes = {}
+for _, region in ipairs(GetRegionsInRadius(self, position, radius)) do
+if region.Nodes then
+for _, node in ipairs(region.Nodes) do
+if (node.Position - position).Magnitude < radius then table.insert(nodes, node) end
+end
+end
+end
+return nodes
+end
+
+function OctreeClass:GetNearest(position, radius, maxNodes)
+local nodes = self:SearchRadius(position, radius)
+table.sort(nodes, function(a, b) return (a.Position - position).Magnitude < (b.Position - position).Magnitude end)
+if maxNodes and #nodes > maxNodes then
+return table.move(nodes, 1, maxNodes, 1, table.create(maxNodes))
+end
+return nodes
+end
+
+function OctreeClass:_getRegion(maxLevel, position)
+local function GetRegion(regionParent, regions, level)
+local region = nil
+for _, r in regions do
+if IsPointInBox(position, r.Center, r.Size) then region = r; break end
+end
+if not region then
+local size = self.Size / (2 ^ (level - 1))
+local origin = regionParent and regionParent.Center or Vector3.new(RoundTo(position.X, size), RoundTo(position.Y, size), RoundTo(position.Z, size))
+local center = origin
+if regionParent then
+center += Vector3.new(
+position.X > origin.X and size / 2 or -size / 2,
+position.Y > origin.Y and size / 2 or -size / 2,
+position.Z > origin.Z and size / 2 or -size / 2
+)
+end
+region = { Regions = {}, Level = level, Size = size, Radius = math.sqrt(size * size * 3), Center = center, Parent = regionParent, Nodes = level == MAX_SUB_REGIONS and {} or nil }
+table.insert(regions, region)
+end
+return level == maxLevel and region or GetRegion(region, region.Regions, level + 1)
+end
+local startRegion = GetTopRegion(self, position, true)
+return GetRegion(startRegion, startRegion.Regions, 2)
+end
+
+return { new = CreateOctree }
+end)()
+
+-- === ЯДРО ФАРМА ===
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local RunService = game:GetService("RunService")
+local Lighting = game:GetService("Lighting")
+
+local rt = {}
+rt.__index = rt
+rt.octree = Octree.new()
+rt.RoundInProgress = false
+rt.Players = Players
+rt.player = Players.LocalPlayer
+rt.coinContainer = nil
+rt.touchedCoins = {}
+rt.positionChangeConnections = setmetatable({}, { __mode = "v" })
+rt.potatoConnections = setmetatable({}, { __mode = "v" })
+
+local State = {
+Action = "Action",
+StandStillWait = "StandStillWait",
+WaitingForRound = "WaitingForRound",
+WaitingForRoundEnd = "WaitingForRoundEnd",
+RespawnState = "RespawnState"
+}
+
+local CurrentState = State.WaitingForRound
+local LastPosition = nil
+local RoundInProgress = function() return rt.RoundInProgress end
+local BagIsFull = false
+local IsMurderer = false
+local Working = false
+local ROUND_TIMER = Workspace:WaitForChild("RoundTimerPart").SurfaceGui.Timer
+local PLAYER_GUI = rt.player:WaitForChild("PlayerGui")
+
+function rt:Message(_Title, _Text, Time)
+game:GetService("StarterGui"):SetCore("SendNotification", { Title = _Title, Text = _Text, Duration = Time })
+end
+
+function rt:Character() return self.player.Character or self.player.CharacterAdded:Wait() end
+
+function rt:GetCharacterLoaded()
+repeat task.wait(0.02) until rt:Character() ~= nil
+end
+
+function rt:CheckIfPlayerIsInARound()
+local mainGui = PLAYER_GUI:FindFirstChild("MainGUI")
+if not mainGui then return false end
+if mainGui.Game.Timer.Visible then return true end
+if mainGui.Game.EarnedXP.Visible then return true end
+return false
+end
+
+function rt:Map()
+for _, v in Workspace:GetDescendants() do
+if v.Name == "Spawns" and v.Parent.Name ~= "Lobby" then return v.Parent end
+end
+return nil
+end
+
+function rt:CheckIfGameInProgress() return rt:Map() ~= nil end
+
+function rt:GetAlivePlayers()
+local aliveplrs = setmetatable({}, {__mode = "v"})
+local OldPos = self:Character():GetPivot()
+local pos = CFrame.new(-121.995, 134.462, 46.418)
+
+if not rt:CheckIfGameInProgress() then return nil end
+local isAlive = rt:CheckIfPlayerIsInARound()
+if not isAlive then self:Character():PivotTo(pos) end
+
+for _, v in pairs(rt.Players:GetPlayers()) do
+if v.Character and v.Character.PrimaryPart then
+local distance = (self:Character().PrimaryPart.Position - v.Character.PrimaryPart.Position).Magnitude
+if isAlive and distance <= 500 then table.insert(aliveplrs, v)
+elseif not isAlive and distance > 500 then table.insert(aliveplrs, v) end
+end
+end
+if not isAlive then self:Character():PivotTo(OldPos) end
+return aliveplrs
+end
+
+function rt:CheckIfPlayerWasInARound() return self.player:GetAttribute("Alive") == true end
+function rt:IsElite() return self.player:GetAttribute("Elite") == true end
+
+local function AutoFarmCleanUp()
+for _, connection in pairs(rt.positionChangeConnections) do
+if connection.Connected then connection:Disconnect() end
+end
+if rt.Added then rt.Added:Disconnect() end
+if rt.Removing then rt.Removing:Disconnect() end
+table.clear(rt.touchedCoins)
+table.clear(rt.positionChangeConnections)
+rt.octree:ClearAllNodes()
+end
+
+-- === УНИВЕРСАЛЬНЫЙ ПОИСК МОНЕТ В UI (ИСПРАВЛЕНО ДЛЯ ТЕЛЕФОНОВ) ===
+local function GetCoinsFromUI()
+if not PLAYER_GUI then return 0 end
+
+local maxFound = 0
+local isMaxStr = false
+
+pcall(function()
+    -- Ищем по всему PlayerGui, игнорируя иерархию, так как на телефоне она другая
+    for _, v in pairs(PLAYER_GUI:GetDescendants()) do
+        if v:IsA("TextLabel") and (v.Name == "Coins" or string.find(v.Name, "Coin")) then
+            local txt = string.lower(v.Text)
+            
+            if txt == "max" or txt == "full" then
+                isMaxStr = true
+            else
+                local num = tonumber(string.match(txt, "%d+"))
+                if num and num > maxFound then
+                    maxFound = num
+                end
+            end
+        end
+    end
+end)
+
+if isMaxStr then
+    return rt:IsElite() and 50 or 40
+end
+return maxFound
+
+
+end
+
+local function IsBagFull()
+return GetCoinsFromUI() >= (rt:IsElite() and 50 or 40)
+end
+
+local function isCoinTouched(coin) return rt.touchedCoins[coin] end
+
+local function markCoinAsTouched(coin)
+if not rt then return end
+rt.touchedCoins[coin] = true
+
+-- Полностью удаляем монету из памяти поиска, чтобы бот не "зависал", пытаясь найти её снова
+local node = rt.octree:FindFirstNode(coin)
+if node then
+    rt.octree:RemoveNode(node)
+end
+
+
+end
+
+local function setupPositionTracking(coin, LastPositonY)
+local connection
+connection = coin:GetPropertyChangedSignal("Position"):Connect(function()
+if LastPositonY and LastPositonY ~= coin.Position.Y then
+markCoinAsTouched(coin)
+if connection.Connected then connection:Disconnect() end
+end
+end)
+rt.positionChangeConnections[coin] = connection
+end
+
+-- ЛЕГКИЙ И БЕЗОПАСНЫЙ МЕТОД ПЕРЕДВИЖЕНИЯ
+local function moveToPositionSlowly(targetPosition, duration)
+local char = rt:Character()
+if not char or not char.PrimaryPart then return end
+
+local hrp = char.PrimaryPart
+local startPosition = hrp.Position
+local startTime = tick()
+
+while true do
+    local elapsedTime = tick() - startTime
+    local alpha = math.min(elapsedTime / duration, 1)
+    if not rt:Character() or not char.PrimaryPart then break end
+
+    -- Простое линейное перемещение (самое легкое для процессора)
+    char:PivotTo(CFrame.new(startPosition:Lerp(targetPosition, alpha)))
+    
+    -- Обнуляем физические силы, чтобы игра не пыталась вытолкнуть персонажа из стен или закрутить
+    hrp.AssemblyLinearVelocity = Vector3.zero
+    hrp.AssemblyAngularVelocity = Vector3.zero
+    
+    if alpha >= 1 then 
+        break 
+    end
+    RunService.Heartbeat:Wait()
+end
+
+
+end
+
+local function populateOctree()
+rt.octree:ClearAllNodes()
+if not rt.coinContainer then return end
+for _, descendant in pairs(rt.coinContainer:GetDescendants()) do
+if descendant:IsA("TouchTransmitter") then
+local parentCoin = descendant.Parent
+if not isCoinTouched(parentCoin) then
+rt.octree:CreateNode(parentCoin.Position, parentCoin)
+setupPositionTracking(parentCoin, parentCoin.Position.Y)
+end
+end
+end
+
+rt.Added = rt.coinContainer.DescendantAdded:Connect(function(descendant)
+if descendant:IsA("TouchTransmitter") then
+local parentCoin = descendant.Parent
+if not isCoinTouched(parentCoin) then
+rt.octree:CreateNode(parentCoin.Position, parentCoin)
+setupPositionTracking(parentCoin, parentCoin.Position.Y)
+end
+end
+end)
+end
+
+local function ChangeState(newState) CurrentState = newState end
+local function CheckMurderer() return IsMurderer end
+
+local function CollectCoins()
+Working = true
+local map = rt:Map()
+if map then rt.coinContainer = map:FindFirstChild("CoinContainer") end
+populateOctree()
+
+while CurrentState == State.Action and SETTINGS.AutoFarmEnabled do
+if IsBagFull() then
+BagIsFull = true
+break
+end
+
+local char = rt:Character()
+if not char or not char.PrimaryPart then break end
+
+local nearestNodes = rt.octree:GetNearest(char.PrimaryPart.Position, SETTINGS.Radius, 5)
+local targetCoin = nil
+
+for _, node in ipairs(nearestNodes) do
+    if not isCoinTouched(node.Object) then
+        targetCoin = node.Object
+        break
+    end
+end
+
+if targetCoin then
+    local targetPosition = targetCoin.Position
+    local distance = (char.PrimaryPart.Position - targetPosition).Magnitude
+    local duration = distance / SETTINGS.Speed
+    
+    moveToPositionSlowly(targetPosition, duration)
+    markCoinAsTouched(targetCoin)
+    
+    -- Микро-пауза для обмана античита. Сервер видит прерывистое движение и не кикает так быстро.
+    task.wait(math.random(10, 25) / 100) 
+else
+    task.wait(0.5)
+end
+
+
+end
+AutoFarmCleanUp()
+end
+
+local function StandStillWait()
+rt:GetCharacterLoaded()
+task.wait(2)
+ChangeState(State.WaitingForRound)
+end
+
+local function ActionState()
+LastPosition = nil
+CollectCoins()
+
+if BagIsFull or not RoundInProgress() then
+BagIsFull, Working = false, false
+if CheckMurderer() then rt.RoundInProgress = false end
+
+-- Гарантированный ресет при заполнении
+local char = rt:Character()
+if char then
+    local hum = char:FindFirstChild("Humanoid")
+    if hum then
+        hum.Health = 0
+        hum:ChangeState(Enum.HumanoidStateType.Dead)
+    end
+    pcall(function() char:BreakJoints() end)
+end
+
+ChangeState(CheckMurderer() and State.WaitingForRound or State.WaitingForRoundEnd)
+
+
+end
+end
+
+local function RespawnState()
+rt:GetCharacterLoaded()
+task.wait(1)
+if LastPosition == nil then
+local alive = rt:GetAlivePlayers()
+if alive and #alive > 0 then LastPosition = alive[1] end
+end
+if rt:Character() and LastPosition then
+rt:Character():PivotTo(LastPosition)
+end
+if not RoundInProgress() then
+ChangeState(State.WaitingForRound)
+return
+end
+ChangeState(State.Action)
+end
+
+local function WaitingForRound()
+Working = false
+repeat task.wait(0.5) until RoundInProgress() and rt:CheckIfPlayerWasInARound()
+ChangeState(State.Action)
+end
+
+local function waitForRoundEnd()
+Working = false
+repeat task.wait(1) until not RoundInProgress()
+ChangeState(State.WaitingForRound)
+end
+
+-- === СЛУШАТЕЛИ ИВЕНТОВ И СМЕРТИ ===
+rt.RoleTracker1 = rt.player.DescendantAdded:Connect(function(descendant)
+if descendant:IsA("Tool") and descendant.Name == "Knife" then IsMurderer = true end
+end)
+
+rt.InvalidPos = Workspace.DescendantAdded:Connect(function(descendant)
+if descendant:IsA("Model") and descendant.Parent and descendant.Parent.Name ~= "Lobby" then
+if string.match(descendant.Name, "Glitch") or string.match(descendant.Name, "Invis") then
+descendant:Destroy()
+end
+end
+end)
+
+local LastText
+ROUND_TIMER:GetPropertyChangedSignal("Text"):Connect(function() rt.RoundInProgress = true end)
+
+PLAYER_GUI.ChildAdded:Connect(function(child)
+if child:IsA("Sound") then
+rt.RoundInProgress = false
+Working = false
+ChangeState(State.WaitingForRound)
+end
+end)
+
+rt.UserDied = rt.player.CharacterRemoving:Connect(function(character)
+AutoFarmCleanUp()
+LastText = ROUND_TIMER.Text
+if CheckMurderer() then
+IsMurderer, LastPosition, Working, rt.RoundInProgress = false, nil, false, false
+return ChangeState(State.StandStillWait)
+end
+if not RoundInProgress() then
+IsMurderer, LastPosition, Working = false, nil, false
+return ChangeState(State.WaitingForRound)
+end
+task.wait(2)
+if LastText == ROUND_TIMER.Text then
+LastPosition, IsMurderer, rt.RoundInProgress, Working = nil, false, false, false
+return ChangeState(State.WaitingForRound)
+end
+if Working then
+Working, IsMurderer, LastPosition = false, false, nil
+ChangeState(State.RespawnState)
+end
+end)
+
+-- === ФУНКЦИИ ОПТИМИЗАЦИИ ГРАФИКИ ===
+local function makePartPotato(v)
+if v:IsA("BasePart") then
+v.Material = Enum.Material.SmoothPlastic
+v.Reflectance = 0
+v.CastShadow = false
+elseif v:IsA("Decal") or v:IsA("Texture") or v:IsA("PostEffect") or v:IsA("Sky") or v:IsA("Atmosphere") or v:IsA("SunRaysEffect") or v:IsA("BloomEffect") or v:IsA("BlurEffect") or v:IsA("ColorCorrectionEffect") or v:IsA("DepthOfFieldEffect") then
+v:Destroy()
+end
+end
+
+local function applyPotatoMode()
+if not SETTINGS.PotatoMode then return end
+pcall(function() setfpscap(SETTINGS.FpsCap) end)
+Lighting.GlobalShadows = false
+Lighting.FogEnd = 9e9
+Lighting.Brightness = 1
+
+for _, v in pairs(Lighting:GetDescendants()) do makePartPotato(v) end
+for _, v in pairs(Workspace:GetDescendants()) do makePartPotato(v) end
+
+if #rt.potatoConnections == 0 then
+table.insert(rt.potatoConnections, Workspace.DescendantAdded:Connect(function(v)
+if SETTINGS.PotatoMode then makePartPotato(v) end
+end))
+table.insert(rt.potatoConnections, Lighting.DescendantAdded:Connect(function(v)
+if SETTINGS.PotatoMode then makePartPotato(v) end
+end))
+end
+end
+
+-- === ИНТЕРФЕЙС GUI ===
+local ScreenGui = Instance.new("ScreenGui")
+local coreGui = pcall(function() return gethui() end) and gethui() or game:GetService("CoreGui")
+ScreenGui.Parent = pcall(function() return coreGui.Name end) and coreGui or rt.player:WaitForChild("PlayerGui")
+ScreenGui.ResetOnSpawn = false
+
+local MainFrame = Instance.new("Frame", ScreenGui)
+MainFrame.Size = UDim2.new(0, 260, 0, 360)
+MainFrame.Position = UDim2.new(0.5, -130, 0.4, -180)
+MainFrame.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
+MainFrame.BorderSizePixel = 0
+MainFrame.ClipsDescendants = true
+
+local UICorner = Instance.new("UICorner", MainFrame)
+UICorner.CornerRadius = UDim.new(0, 10)
+
+-- Шапка (Title Bar - только за неё можно таскать)
+local TitleBar = Instance.new("Frame", MainFrame)
+TitleBar.Size = UDim2.new(1, 0, 0, 40)
+TitleBar.BackgroundColor3 = Color3.fromRGB(45, 125, 245)
+TitleBar.BorderSizePixel = 0
+local TitleCorner = Instance.new("UICorner", TitleBar)
+TitleCorner.CornerRadius = UDim.new(0, 10)
+local TitleFix = Instance.new("Frame", TitleBar) -- Квадратный низ шапки
+TitleFix.Size = UDim2.new(1, 0, 0.5, 0)
+TitleFix.Position = UDim2.new(0, 0, 0.5, 0)
+TitleFix.BackgroundColor3 = Color3.fromRGB(45, 125, 245)
+TitleFix.BorderSizePixel = 0
+
+local TitleLabel = Instance.new("TextLabel", TitleBar)
+TitleLabel.Size = UDim2.new(1, 0, 1, 0)
+TitleLabel.BackgroundTransparency = 1
+TitleLabel.Text = "MM2 LITE FARM"
+TitleLabel.TextColor3 = Color3.new(1, 1, 1)
+TitleLabel.Font = Enum.Font.GothamBold
+TitleLabel.TextSize = 16
+
+-- Логика перетаскивания (Drag) ТОЛЬКО для TitleBar
+local dragging, dragInput, dragStart, startPos
+TitleBar.InputBegan:Connect(function(input)
+if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+dragging = true
+dragStart = input.Position
+startPos = MainFrame.Position
+input.Changed:Connect(function()
+if input.UserInputState == Enum.UserInputState.End then dragging = false end
+end)
+end
+end)
+TitleBar.InputChanged:Connect(function(input)
+if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then dragInput = input end
+end)
+RunService.RenderStepped:Connect(function()
+if dragging and dragInput then
+local delta = dragInput.Position - dragStart
+MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+end
+end)
+
+-- Контейнер для списков
+local ContentFrame = Instance.new("Frame", MainFrame)
+ContentFrame.Size = UDim2.new(1, -20, 1, -50)
+ContentFrame.Position = UDim2.new(0, 10, 0, 45)
+ContentFrame.BackgroundTransparency = 1
+
+local UIListLayout = Instance.new("UIListLayout", ContentFrame)
+UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+UIListLayout.Padding = UDim.new(0, 8)
+
+-- Функция создания панели с кнопками + / -
+local function CreateControlRow(parent, labelText, defaultVal, minVal, maxVal, step, callback)
+local Row = Instance.new("Frame", parent)
+Row.Size = UDim2.new(1, 0, 0, 40)
+Row.BackgroundColor3 = Color3.fromRGB(50, 50, 55)
+Instance.new("UICorner", Row).CornerRadius = UDim.new(0, 6)
+
+local Label = Instance.new("TextLabel", Row)
+Label.Size = UDim2.new(0.6, 0, 1, 0)
+Label.Position = UDim2.new(0, 10, 0, 0)
+Label.BackgroundTransparency = 1
+Label.Text = labelText .. ": " .. defaultVal
+Label.TextColor3 = Color3.new(1, 1, 1)
+Label.Font = Enum.Font.GothamSemibold
+Label.TextSize = 14
+Label.TextXAlignment = Enum.TextXAlignment.Left
+
+local BtnMinus = Instance.new("TextButton", Row)
+BtnMinus.Size = UDim2.new(0, 30, 0, 30)
+BtnMinus.Position = UDim2.new(1, -70, 0.5, -15)
+BtnMinus.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+BtnMinus.Text = "-"
+BtnMinus.TextColor3 = Color3.new(1, 1, 1)
+BtnMinus.Font = Enum.Font.GothamBold
+BtnMinus.TextSize = 18
+Instance.new("UICorner", BtnMinus).CornerRadius = UDim.new(0, 6)
+
+local BtnPlus = Instance.new("TextButton", Row)
+BtnPlus.Size = UDim2.new(0, 30, 0, 30)
+BtnPlus.Position = UDim2.new(1, -35, 0.5, -15)
+BtnPlus.BackgroundColor3 = Color3.fromRGB(50, 200, 50)
+BtnPlus.Text = "+"
+BtnPlus.TextColor3 = Color3.new(1, 1, 1)
+BtnPlus.Font = Enum.Font.GothamBold
+BtnPlus.TextSize = 18
+Instance.new("UICorner", BtnPlus).CornerRadius = UDim.new(0, 6)
+
+local currentValue = defaultVal
+
+BtnMinus.MouseButton1Click:Connect(function()
+currentValue = math.max(minVal, currentValue - step)
+Label.Text = labelText .. ": " .. currentValue
+callback(currentValue)
+end)
+
+BtnPlus.MouseButton1Click:Connect(function()
+currentValue = math.min(maxVal, currentValue + step)
+Label.Text = labelText .. ": " .. currentValue
+callback(currentValue)
+end)
+
+return Row
+end
+
+-- Кнопка FARM
+local ToggleBtn = Instance.new("TextButton", ContentFrame)
+ToggleBtn.Size = UDim2.new(1, 0, 0, 45)
+ToggleBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+ToggleBtn.Text = "FARM: OFF"
+ToggleBtn.TextColor3 = Color3.new(1, 1, 1)
+ToggleBtn.Font = Enum.Font.GothamBold
+ToggleBtn.TextSize = 16
+Instance.new("UICorner", ToggleBtn).CornerRadius = UDim.new(0, 6)
+
+-- Кнопка POTATO MODE
+local PotatoBtn = Instance.new("TextButton", ContentFrame)
+PotatoBtn.Size = UDim2.new(1, 0, 0, 35)
+PotatoBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
+PotatoBtn.Text = "POTATO MODE: OFF"
+PotatoBtn.TextColor3 = Color3.new(1, 1, 1)
+PotatoBtn.Font = Enum.Font.GothamSemibold
+PotatoBtn.TextSize = 14
+Instance.new("UICorner", PotatoBtn).CornerRadius = UDim.new(0, 6)
+
+-- Настройки (Скроллы заменены на кнопки)
+CreateControlRow(ContentFrame, "СКОРОСТЬ", SETTINGS.Speed, 10, 100, 1, function(val) SETTINGS.Speed = val end)
+CreateControlRow(ContentFrame, "РАДИУС", SETTINGS.Radius, 50, 1000, 10, function(val) SETTINGS.Radius = val end)
+CreateControlRow(ContentFrame, "FPS CAP", SETTINGS.FpsCap, 6, 60, 2, function(val)
+SETTINGS.FpsCap = val
+if SETTINGS.PotatoMode then pcall(function() setfpscap(val) end) end
+end)
+
+-- Панель Статистики
+local StatsBtn = Instance.new("TextButton", ContentFrame)
+StatsBtn.Size = UDim2.new(1, 0, 0, 30)
+StatsBtn.BackgroundColor3 = Color3.fromRGB(45, 125, 245)
+StatsBtn.Text = "СТАТИСТИКА ▼"
+StatsBtn.TextColor3 = Color3.new(1, 1, 1)
+StatsBtn.Font = Enum.Font.GothamSemibold
+StatsBtn.TextSize = 14
+Instance.new("UICorner", StatsBtn).CornerRadius = UDim.new(0, 6)
+
+local StatsPanel = Instance.new("Frame", ContentFrame)
+StatsPanel.Size = UDim2.new(1, 0, 0, 70)
+StatsPanel.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+StatsPanel.Visible = false
+Instance.new("UICorner", StatsPanel).CornerRadius = UDim.new(0, 6)
+
+local StatsText = Instance.new("TextLabel", StatsPanel)
+StatsText.Size = UDim2.new(1, -10, 1, -10)
+StatsText.Position = UDim2.new(0, 5, 0, 5)
+StatsText.BackgroundTransparency = 1
+StatsText.Text = "Время: 00:00:00\nМонет собрано: 0\nМонет в час: 0"
+StatsText.TextColor3 = Color3.fromRGB(200, 200, 200)
+StatsText.Font = Enum.Font.Gotham
+StatsText.TextSize = 13
+StatsText.TextXAlignment = Enum.TextXAlignment.Left
+StatsText.TextYAlignment = Enum.TextYAlignment.Top
+
+StatsBtn.MouseButton1Click:Connect(function()
+StatsPanel.Visible = not StatsPanel.Visible
+StatsBtn.Text = StatsPanel.Visible and "СТАТИСТИКА ▲" or "СТАТИСТИКА ▼"
+MainFrame.Size = UDim2.new(0, 260, 0, StatsPanel.Visible and 440 or 360)
+end)
+
+local function resetStats()
+StatsData.StartTime = 0
+StatsData.CoinsCollected = 0
+StatsText.Text = "Время: 00:00:00\nМонет собрано: 0\nМонет в час: 0"
+end
+
+ToggleBtn.MouseButton1Click:Connect(function()
+SETTINGS.AutoFarmEnabled = not SETTINGS.AutoFarmEnabled
+ToggleBtn.Text = "FARM: " .. (SETTINGS.AutoFarmEnabled and "ON" or "OFF")
+ToggleBtn.BackgroundColor3 = SETTINGS.AutoFarmEnabled and Color3.fromRGB(50, 200, 50) or Color3.fromRGB(200, 50, 50)
+if not SETTINGS.AutoFarmEnabled then
+Working = false
+resetStats()
+else
+StatsData.StartTime = tick()
+StatsData.LastRoundCoins = GetCoinsFromUI()
+end
+end)
+
+PotatoBtn.MouseButton1Click:Connect(function()
+SETTINGS.PotatoMode = not SETTINGS.PotatoMode
+PotatoBtn.Text = "POTATO MODE: " .. (SETTINGS.PotatoMode and "ON" or "OFF")
+PotatoBtn.BackgroundColor3 = SETTINGS.PotatoMode and Color3.fromRGB(200, 150, 50) or Color3.fromRGB(80, 80, 90)
+if SETTINGS.PotatoMode then applyPotatoMode() else pcall(function() setfpscap(60) end) end
+end)
+
+-- Обновление статистики
+task.spawn(function()
+while task.wait(1) do
+if SETTINGS.AutoFarmEnabled and StatsData.StartTime > 0 then
+local currentCoins = GetCoinsFromUI()
+
+    if currentCoins > StatsData.LastRoundCoins then
+        StatsData.CoinsCollected = StatsData.CoinsCollected + (currentCoins - StatsData.LastRoundCoins)
+    end
+    
+    -- Если ресетнулся или обнулился (новый раунд)
+    if currentCoins < 10 and StatsData.LastRoundCoins >= 40 then
+        -- Сбрасываем последний показатель, чтобы статистика считала заново
+    end
+    StatsData.LastRoundCoins = currentCoins
+
+    local timeElapsed = tick() - StatsData.StartTime
+    local h = math.floor(timeElapsed / 3600)
+    local m = math.floor((timeElapsed % 3600) / 60)
+    local s = math.floor(timeElapsed % 60)
+    
+    local hoursFloat = timeElapsed / 3600
+    local perHour = hoursFloat > 0 and math.floor(StatsData.CoinsCollected / hoursFloat) or 0
+    
+    StatsText.Text = string.format("Время: %02d:%02d:%02d\nМонет собрано: %d\nМонет в час: %d", h, m, s, StatsData.CoinsCollected, perHour)
+end
+
+
+end
+end)
+
+IsMurderer = rt.player.Backpack:FindFirstChild("Knife") ~= nil
+
+-- === ОСНОВНОЙ ЦИКЛ ===
+task.spawn(function()
+while true do
+if not SETTINGS.AutoFarmEnabled then
+task.wait(1)
+continue
+end
+
+if CurrentState == State.WaitingForRound then WaitingForRound()
+elseif CurrentState == State.Action then ActionState()
+elseif CurrentState == State.WaitingForRoundEnd then waitForRoundEnd()
+elseif CurrentState == State.RespawnState then RespawnState()
+elseif CurrentState == State.StandStillWait then StandStillWait()
+end
+task.wait()
+
+
+end
+end)
