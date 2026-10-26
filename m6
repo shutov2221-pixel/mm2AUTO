@@ -186,6 +186,11 @@ end
 
 -- === ПРОВЕРКА ЛИМИТА СУМКИ ===
 local function IsBagFull()
+    local isEvent = (ActiveCurrencyName ~= "Coin")
+    local maxLimit = isEvent and 50 or (rt:IsElite() and 50 or 40)
+    if CurrentRoundCoins >= maxLimit then
+        BagIsFull = true
+    end
     return BagIsFull
 end
 
@@ -243,6 +248,8 @@ local function PopulateCoins()
 
         if data == "pending" then
             rt.touchedCoins[coin] = "collected"
+            CurrentRoundCoins = CurrentRoundCoins + 1
+            StatsData.CoinsCollected = StatsData.CoinsCollected + 1
             if IsBagFull() then BagIsFull = true end
         end
     end)
@@ -257,7 +264,7 @@ local function GetNearestCoin()
     local minDist = math.huge
 
     for coin, _ in pairs(rt.cachedCoins) do
-        if coin and coin.Parent == rt.coinContainer and not isCoinTouched(coin) and coin:FindFirstChildWhichIsA("TouchTransmitter") then
+        if coin and rt.coinContainer and coin:IsDescendantOf(rt.coinContainer) and not isCoinTouched(coin) and coin:FindFirstChildWhichIsA("TouchTransmitter") then
             local dist = (coin.Position - pos).Magnitude
             if dist < minDist then
                 minDist = dist
@@ -308,7 +315,14 @@ local function SetupBagParser()
                     if not bagFrame.Visible then return end
                     local count = tonumber(coinsLabel.Text) or 0
                     
-                    if count < 40 then
+                    if count < 40 and CurrentRoundCoins < 40 then
+                        BagIsFull = false
+                        return
+                    end
+
+                    -- Защита от залипания UI: если раунд только начался и скрипт еще не собирал монеты в этом раунде,
+                    -- игнорируем старое значение из UI прошлого раунда
+                    if CurrentRoundCoins == 0 then
                         BagIsFull = false
                         return
                     end
@@ -327,7 +341,7 @@ local function SetupBagParser()
                     local isEvent = (bagFrame.Name ~= "Coin")
                     local maxLimit = isEvent and 50 or (rt:IsElite() and 50 or 40)
 
-                    if count >= maxLimit then
+                    if count >= maxLimit or CurrentRoundCoins >= maxLimit then
                         isFull = true
                     end
 
@@ -348,6 +362,9 @@ local function SetupBagParser()
                     elseif currentCount < lastCount then
                         BagCoinCount = currentCount
                         CurrentRoundCoins = currentCount
+                        if currentCount < 40 then
+                            BagIsFull = false
+                        end
                     end
 
                     lastCount = currentCount
@@ -670,6 +687,38 @@ end
 
 -- Объявление UpdateStatus для использования в логике до создания GUI
 local UpdateStatus: (text: string, color: Color3?) -> () = function() end
+
+-- =====================================================================
+-- ГЛОБАЛЬНЫЙ СЕТЕВОЙ ПЕРЕХВАТ КОНЦА РАУНДА (ДЛЯ ВСЕХ РЕЖИМОВ: CLASSIC / ASSASSIN)
+-- =====================================================================
+local function SetupGlobalRoundEndListener()
+    task.spawn(function()
+        local roundEndEvent = FindRemoteEvent("RoundEndFade")
+        if not roundEndEvent then
+            for _ = 1, 15 do
+                task.wait(1)
+                roundEndEvent = FindRemoteEvent("RoundEndFade")
+                if roundEndEvent then break end
+            end
+        end
+
+        if roundEndEvent then
+            RegisterConnection(roundEndEvent.OnClientEvent:Connect(function()
+                if IsTerminated then return end
+                UpdateStatus("Раунд завершён (RoundEndFade)", Color3.fromRGB(100, 255, 120))
+                BagIsFull = false
+                CurrentRoundCoins = 0
+                Working = false
+                AutoFarmCleanUp()
+                if CurrentState == State.Action then
+                    ChangeState(State.WaitingForRoundEnd)
+                end
+            end))
+        end
+    end)
+end
+
+SetupGlobalRoundEndListener()
 
 -- =====================================================================
 -- НОВАЯ ЛОГИКА ПРЕДВАРИТЕЛЬНОЙ ЗАЧИСТКИ (PreRoundKillChain)
@@ -1534,7 +1583,7 @@ end)
 local function isCoinCollectedByServer(coin)
     if not coin then return true end
     if not rt or not rt.coinContainer then return true end
-    if coin.Parent ~= rt.coinContainer then return true end
+    if not coin:IsDescendantOf(rt.coinContainer) then return true end
     if not coin:FindFirstChildWhichIsA("TouchTransmitter") then return true end
     return false
 end
@@ -1601,7 +1650,7 @@ local function moveToPositionPhysically(targetPosition, targetCoin, bv, bg)
 
                 -- 2. Реактивный слушатель: удаление из CoinContainer (Победитель бенчмарка #2)
                 connCoin = targetCoin.AncestryChanged:Connect(function(_, parent)
-                    if parent == nil or (rt.coinContainer and parent ~= rt.coinContainer) then
+                    if parent == nil or (rt.coinContainer and not targetCoin:IsDescendantOf(rt.coinContainer)) then
                         onServerConfirmed()
                     end
                 end)
@@ -1727,8 +1776,11 @@ local function CollectCoins()
 
             if pickedUp and rt.touchedCoins[targetCoin] == "pending" then
                 rt.touchedCoins[targetCoin] = "collected"
+                CurrentRoundCoins = CurrentRoundCoins + 1
+                StatsData.CoinsCollected = StatsData.CoinsCollected + 1
 
                 if IsBagFull() then
+                    BagIsFull = true
                     UpdateStatus("Фарм: Сохранение последней монеты...", Color3.fromRGB(255, 200, 50))
                     task.wait(math.random(6, 12) / 10)
                     break
@@ -1801,6 +1853,7 @@ end
 local function WaitingForRound()
     Working = false
     BagIsFull = false
+    CurrentRoundCoins = 0
     UpdateStatus("Фарм: Ожидание начала раунда", Color3.fromRGB(150, 150, 150))
 
     repeat
@@ -1814,9 +1867,10 @@ end
 local function waitForRoundEnd()
     Working = false
     BagIsFull = false
+    CurrentRoundCoins = 0
     UpdateStatus("Фарм: Ожидание конца игры", Color3.fromRGB(255, 150, 50))
     repeat
-        task.wait(0.5)
+        task.wait(0.3)
         -- Если раунд уже начался заново (выдан атрибут Alive), сразу переходим к действию
         if rt:CheckIfPlayerWasInARound() then break end
     until not RoundInProgress() or not SETTINGS.AutoFarmEnabled or IsTerminated
@@ -1829,6 +1883,7 @@ rt.UserDied = RegisterConnection(rt.player.CharacterRemoving:Connect(function(ch
     if IsTerminated then return end
     AutoFarmCleanUp()
     BagIsFull = false
+    CurrentRoundCoins = 0
     if RoundInProgress() then
         ChangeState(State.WaitingForRoundEnd)
     else
