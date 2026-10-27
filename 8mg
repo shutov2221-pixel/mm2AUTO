@@ -2063,8 +2063,10 @@ local function ScanVotePads()
                     table.insert(allNames, mapName)
                     local tpPart = pad:IsA("BasePart") and pad or (pad:IsA("Model") and (pad.PrimaryPart or pad:FindFirstChildWhichIsA("BasePart"))) or pad:FindFirstChildWhichIsA("BasePart")
                     if tpPart then
-                        -- Идеальная высота (1.0 студ над центром Pad, Y = 466.5)
-                        currentMaps[mapName] = tpPart.CFrame + Vector3.new(0, 1.0, 0)
+                        -- Смещение -1.2 студа укладывает тело точно под пол лобби, оставаясь внутри хитбокса Pad (Y=464.3).
+                        local underCFrame = tpPart.CFrame * CFrame.new(0, -1.2, 0) * CFrame.Angles(math.rad(90), 0, 0)
+                        local surfCFrame = tpPart.CFrame * CFrame.new(0, 0.8, 0) * CFrame.Angles(math.rad(90), 0, 0)
+                        currentMaps[mapName] = { under = underCFrame, surface = surfCFrame }
                     end
                 end
             end
