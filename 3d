@@ -12,8 +12,8 @@ local PointA: Vector3? = nil
 local PointB: Vector3? = nil
 local VisualBox: Part? = nil
 
--- Таблица для хранения логов ТОЛЬКО последнего сканирования
-local lastScanLogs = {}
+-- Накопитель ВСЕХ логов скрипта для буфера обмена
+local allLogs = {}
 
 -- Хранилище соединений для корректного завершения скрипта
 local connections = {}
@@ -239,6 +239,7 @@ LogLayout.Padding = UDim.new(0, 4)
 local logCount = 0
 local function AddLog(msg, color)
     logCount = logCount + 1
+    table.insert(allLogs, "["..logCount.."] " .. msg)
     local logLine = Instance.new("TextLabel", LogContainer)
     logLine.Size = UDim2.new(1, -10, 0, 0)
     logLine.BackgroundTransparency = 1
@@ -259,9 +260,8 @@ local function AddLog(msg, color)
     end)
 end
 
--- Функция для записи лога, которая также сохраняет его для буфера обмена
+-- Функция для записи лога сканирования
 local function LogScanResult(msg, color)
-    table.insert(lastScanLogs, msg)
     AddLog(msg, color)
 end
 
@@ -307,7 +307,7 @@ ClearBtn.MouseButton1Click:Connect(function()
         end
     end
     logCount = 0
-    lastScanLogs = {}
+    allLogs = {}
     LogContainer.CanvasSize = UDim2.new(0, 0, 0, 0)
     LogContainer.CanvasPosition = Vector2.new(0, 0)
 end)
@@ -351,16 +351,16 @@ BtnB.MouseButton1Click:Connect(function()
 end)
 
 CopyBtn.MouseButton1Click:Connect(function()
-    if #lastScanLogs == 0 then
-        AddLog("Нет данных сканирования для копирования!", Color3.fromRGB(255, 100, 100))
+    if #allLogs == 0 then
+        AddLog("Логи пусты — нечего копировать!", Color3.fromRGB(255, 100, 100))
         return
     end
 
-    local textToCopy = table.concat(lastScanLogs, "\n")
+    local textToCopy = table.concat(allLogs, "\n")
     local setclip = setclipboard or toclipboard or set_clipboard or (Clipboard and Clipboard.set)
     if setclip then
         pcall(function() setclip(textToCopy) end)
-        AddLog("Последние логи (" .. #lastScanLogs .. " строк) скопированы!", Color3.fromRGB(100, 255, 100))
+        AddLog("Все логи (" .. #allLogs .. " строк) скопированы!", Color3.fromRGB(100, 255, 100))
         CopyBtn.Text = "СКОПИРОВАНО!"
         CopyBtn.BackgroundColor3 = Color3.fromRGB(50, 200, 50)
     else
@@ -379,9 +379,6 @@ ScanBtn.MouseButton1Click:Connect(function()
         AddLog("Сначала установи Точки A и B!", Color3.fromRGB(255, 100, 100))
         return
     end
-
-    -- Сбрасываем кэш старых логов при новом сканировании
-    lastScanLogs = {}
 
     LogScanResult("--- СКАНИРОВАНИЕ V2 ---", Color3.fromRGB(255, 200, 50))
 
@@ -446,7 +443,6 @@ end)
 -- ФУНКЦИИ АУДИТА СТЕНДОВ И ТЕСТИРОВАНИЯ ГОЛОСОВАНИЯ БЕЗ ТЕЛЕПОРТА
 -- =====================================================================
 local function AuditVotePads()
-    lastScanLogs = {}
     LogScanResult("=== АУДИТ СТЕНДОВ ГОЛОСОВАНИЯ (VOTEPADS) ===", Color3.fromRGB(255, 200, 50))
     local lobby = Workspace:FindFirstChild("Lobby")
     if not lobby then
@@ -495,7 +491,6 @@ local function AuditVotePads()
 end
 
 local function TestVoteWithoutTeleport()
-    lastScanLogs = {}
     LogScanResult("=== ТЕСТ ГОЛОСОВАНИЯ БЕЗ ТЕЛЕПОРТАЦИИ ===", Color3.fromRGB(255, 180, 50))
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
