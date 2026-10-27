@@ -90,7 +90,7 @@ local TitleLabel = Instance.new("TextLabel")
 TitleLabel.Size = UDim2.new(1, -70, 1, 0)
 TitleLabel.Position = UDim2.new(0, 10, 0, 0)
 TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "🛰 MM2 ROUND & STATE MONITOR v1.0"
+TitleLabel.Text = "🛰 MM2 ROUND & STATE MONITOR v2.0"
 TitleLabel.TextColor3 = Color3.fromRGB(110, 210, 255)
 TitleLabel.Font = Enum.Font.GothamBold
 TitleLabel.TextSize = 12
@@ -194,6 +194,8 @@ LblVoteStatus.TextColor3 = Color3.fromRGB(150, 180, 210)
 LblVoteStatus.Font = Enum.Font.GothamSemibold
 LblVoteStatus.TextSize = 11
 LblVoteStatus.TextXAlignment = Enum.TextXAlignment.Left
+LblVoteStatus.ClipsDescendants = true
+LblVoteStatus.TextTruncate = Enum.TextTruncate.AtEnd
 LblVoteStatus.Parent = StateInfoFrame
 
 local LblLocalPlayerStatus = Instance.new("TextLabel")
@@ -458,6 +460,7 @@ end
 local PlayerCoinsCache: { [string]: number } = {}
 local PlayerRolesCache: { [string]: string } = {}
 local PlayerAliveCache: { [string]: boolean } = {}
+local EndVoting: (reason: string?) -> () = function(_: string?) end
 
 local function RegisterRemoteHook(name: string, callback: (...any) -> ())
     local re = FindRemoteEvent(name)
@@ -479,6 +482,7 @@ RegisterRemoteHook("RoleSelect", function(...)
     Log(string.format("🎭 [RoleSelect] Выдана роль: %s | Параметры: %s", tostring(role), SerializeArgs(...)), "ROUND")
     LblRoundStatus.Text = "Раунд: Выдача ролей (" .. tostring(role) .. ")"
     LblRoundStatus.TextColor3 = Color3.fromRGB(100, 220, 255)
+    EndVoting("Выдача ролей (RoleSelect)")
 end)
 
 -- 2. RoundStart: Официальный старт раунда
@@ -487,6 +491,7 @@ RegisterRemoteHook("RoundStart", function(...)
     Log(string.format("🚀 [RoundStart] Раунд официально НАЧАТ! Длительность: %s сек | Параметры: %s", tostring(duration), SerializeArgs(...)), "ROUND")
     LblRoundStatus.Text = "Раунд: ИДЁТ (" .. tostring(duration) .. "с)"
     LblRoundStatus.TextColor3 = Color3.fromRGB(100, 255, 120)
+    EndVoting("Старт раунда (RoundStart)")
 end)
 
 -- 3. RoundEndFade: Завершение раунда сервером
@@ -653,7 +658,7 @@ end
 
 local function InspectMapCandidate(child: Instance)
     -- Исключаем служебные папки и игроков
-    if child == LocalPlayer.Character or Players:GetPlayerFromCharacter(child) then return end
+    if child == LocalPlayer.Character or (child:IsA("Model") and Players:GetPlayerFromCharacter(child)) then return end
     if child.Name == "Lobby" or child.Name == "Terrain" or child.Name == "Camera" then return end
 
     local container = child:FindFirstChild("CoinContainer")
@@ -665,6 +670,9 @@ local function InspectMapCandidate(child: Instance)
         coinSpawnTracked = false
         LblCurrentMap.Text = "Карта: " .. child.Name
         LblCurrentMap.TextColor3 = Color3.fromRGB(100, 255, 150)
+        LblRoundStatus.Text = "Раунд: ИДЁТ (Карта на сервере)"
+        LblRoundStatus.TextColor3 = Color3.fromRGB(100, 255, 120)
+        EndVoting("Спавн карты '" .. child.Name .. "'")
         Log(string.format("🗺️ [КАРТА] СПАВН КАРТЫ: '%s' (Класс: %s, Spawns=%s, CoinContainer=%s)", 
             child.Name, child.ClassName, tostring(spawns ~= nil), tostring(container ~= nil)), "MAP")
 
@@ -683,7 +691,7 @@ local function InspectMapCandidate(child: Instance)
         end
 
         local remConn = child.AncestryChanged:Connect(function(_, parent)
-            if not parent then
+            if not parent or parent ~= Workspace then
                 local lifetime = (mapSpawnTick > 0) and string.format("(жила %.1fc)", tick() - mapSpawnTick) or ""
                 Log(string.format("🧹 [КАРТА] ОЧИСТКА КАРТЫ: '%s' удалена из Workspace %s", child.Name, lifetime), "MAP")
                 if CurrentMapInstance == child then
@@ -696,6 +704,23 @@ local function InspectMapCandidate(child: Instance)
         end)
         table.insert(activeConnections, remConn)
     end
+end
+
+local function GetWorkspaceMap(): Instance?
+    if CurrentMapInstance and CurrentMapInstance.Parent == Workspace then
+        return CurrentMapInstance
+    end
+    for _, child in ipairs(Workspace:GetChildren()) do
+        if child ~= LocalPlayer.Character and not (child:IsA("Model") and Players:GetPlayerFromCharacter(child)) then
+            if child.Name ~= "Lobby" and child.Name ~= "Terrain" and child.Name ~= "Camera" then
+                if child:FindFirstChild("CoinContainer") or child:FindFirstChild("Spawns") then
+                    CurrentMapInstance = child
+                    return child
+                end
+            end
+        end
+    end
+    return nil
 end
 
 -- Сканируем уже существующие карты в Workspace при запуске
@@ -712,23 +737,57 @@ local wsAddConn = Workspace.ChildAdded:Connect(function(child)
 end)
 table.insert(activeConnections, wsAddConn)
 
+-- Слушаем удаление карты из Workspace
+local wsRemConn = Workspace.ChildRemoved:Connect(function(child)
+    if child == CurrentMapInstance then
+        CurrentMapInstance = nil
+        CurrentCoinContainer = nil
+        LblCurrentMap.Text = "Карта: (нет)"
+        LblCurrentMap.TextColor3 = Color3.fromRGB(180, 180, 180)
+    end
+end)
+table.insert(activeConnections, wsRemConn)
+
 -- =====================================================================
 -- ТРЕКЕР ГОЛОСОВАНИЯ (LOBBY VOTEPADS)
 -- =====================================================================
 local isVotingActive = false
 local lastVoteOptions = ""
 
+local function DoEndVoting(reason: string?)
+    if isVotingActive then
+        isVotingActive = false
+        lastVoteOptions = ""
+        local reasonMsg = reason and (" Причина: " .. reason) or ""
+        Log(string.format("🏁 [ГОЛОСОВАНИЕ] ГОЛОСОВАНИЕ ЗАВЕРШЕНО!%s", reasonMsg), "VOTE")
+        LblVoteStatus.Text = "Голосование: Не активно"
+        LblVoteStatus.TextColor3 = Color3.fromRGB(150, 180, 210)
+    end
+end
+EndVoting = DoEndVoting
+
 local function CheckVotingState()
+    -- 1. Если в Workspace есть карта — голосование НЕ активно в любом случае
+    local currentMap = GetWorkspaceMap()
+    if currentMap ~= nil then
+        if isVotingActive then
+            EndVoting("В Workspace активна карта '" .. currentMap.Name .. "'")
+        else
+            if LblVoteStatus.Text ~= "Голосование: Не активно" then
+                LblVoteStatus.Text = "Голосование: Не активно"
+                LblVoteStatus.TextColor3 = Color3.fromRGB(150, 180, 210)
+            end
+        end
+        return
+    end
+
+    -- 2. Карты в Workspace нет — проверяем лобби и VotePads
     local lobby = Workspace:FindFirstChild("Lobby")
     local votePadsFolder = lobby and lobby:FindFirstChild("VotePads")
 
     if not votePadsFolder then
         if isVotingActive then
-            isVotingActive = false
-            lastVoteOptions = ""
-            Log("🗳️ [ГОЛОСОВАНИЕ] VotePads исчезли — голосование окончено", "VOTE")
-            LblVoteStatus.Text = "Голосование: Окончено"
-            LblVoteStatus.TextColor3 = Color3.fromRGB(150, 150, 150)
+            EndVoting("VotePads не найдены в лобби")
         end
         return
     end
@@ -740,21 +799,34 @@ local function CheckVotingState()
         if pad:IsA("BasePart") or pad:IsA("Model") then
             local infoGui = pad:FindFirstChild("VoteInfoGui", true)
             if infoGui then
-                local mapName = nil
-                local votes = 0
-                for _, txt in ipairs(infoGui:GetDescendants()) do
-                    if txt:IsA("TextLabel") and txt.Text ~= "" and txt.Text ~= "Label" then
-                        local t = string.lower(txt.Text)
-                        if string.find(t, "votes:") then
-                            votes = tonumber(string.match(txt.Text, "%d+")) or 0
-                        else
-                            mapName = string.gsub(txt.Text, "^%s*(.-)%s*$", "%1")
+                local isGuiEnabled = true
+                if (infoGui:IsA("SurfaceGui") or infoGui:IsA("BillboardGui")) and not infoGui.Enabled then
+                    isGuiEnabled = false
+                end
+
+                if isGuiEnabled then
+                    local mapName: string? = nil
+                    local votes = 0
+                    for _, desc in ipairs(infoGui:GetDescendants()) do
+                        if desc:IsA("TextLabel") and desc.Text ~= "" then
+                            local cleanText = string.gsub(desc.Text, "^%s*(.-)%s*$", "%1")
+                            local lower = string.lower(cleanText)
+                            if cleanText ~= "" and lower ~= "label" then
+                                if string.find(lower, "votes") then
+                                    local num = tonumber(string.match(cleanText, "%d+"))
+                                    if num then votes = num end
+                                else
+                                    if desc.Name == "MapName" or not mapName then
+                                        mapName = cleanText
+                                    end
+                                end
+                            end
                         end
                     end
-                end
-                if mapName and mapName ~= "" then
-                    table.insert(currentMapNames, string.format("%s (%d гол.)", mapName, votes))
-                    totalVotes = totalVotes + votes
+                    if mapName and mapName ~= "" then
+                        table.insert(currentMapNames, string.format("%s (%d гол.)", mapName, votes))
+                        totalVotes = totalVotes + votes
+                    end
                 end
             end
         end
@@ -772,22 +844,23 @@ local function CheckVotingState()
             end
             isVotingActive = true
             lastVoteOptions = optionsStr
-            LblVoteStatus.Text = "Голосование: ИДЁТ (" .. #currentMapNames .. " карт)"
+            LblVoteStatus.Text = "Голосование: " .. optionsStr
             LblVoteStatus.TextColor3 = Color3.fromRGB(180, 120, 255)
+            if LblRoundStatus.Text == "Раунд: Ожидание" or string.find(LblRoundStatus.Text, "ЗАВЕРШЁН") then
+                LblRoundStatus.Text = "Раунд: Голосование"
+                LblRoundStatus.TextColor3 = Color3.fromRGB(200, 140, 255)
+            end
         end
     else
         if isVotingActive then
-            isVotingActive = false
-            Log(string.format("🏁 [ГОЛОСОВАНИЕ] ГОЛОСОВАНИЕ ЗАВЕРШЕНО! Панели скрыты сервером. Выбор карты...", lastVoteOptions), "VOTE")
-            lastVoteOptions = ""
-            LblVoteStatus.Text = "Голосование: Выбор завершен!"
-            LblVoteStatus.TextColor3 = Color3.fromRGB(100, 255, 120)
+            EndVoting("Панели голосования скрыты / пусты")
         end
     end
 end
 
--- Поллинг голосования раз в 0.5с (нагрузка 0%)
+-- Запуск проверки голосования: первичная проверка сразу при старте и поллинг каждые 0.5с
 task.spawn(function()
+    CheckVotingState()
     while not isTerminated do
         task.wait(0.5)
         CheckVotingState()
