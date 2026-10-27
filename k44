@@ -461,10 +461,18 @@ local function SilentRemoteKill(targetPlayer: Player, knife: Tool): boolean
     local targetChar = targetPlayer.Character
     if not targetChar then return false end
 
-    local targetHRP = targetChar:FindFirstChild("HumanoidRootPart") or targetChar:FindFirstChild("Torso") :: BasePart?
+    local targetHRP = (targetChar:FindFirstChild("HumanoidRootPart") 
+        or targetChar:FindFirstChild("UpperTorso") 
+        or targetChar:FindFirstChild("Torso")) :: BasePart?
     local targetHum = targetChar:FindFirstChildOfClass("Humanoid")
     if not targetHRP or not targetHum or targetHum.Health <= 0 then
         return false
+    end
+
+    -- Сервер MM2 требует, чтобы нож находился в Character (иначе не находит Humanoid владельца)
+    local myChar = LocalPlayer.Character
+    if myChar and knife.Parent ~= myChar then
+        pcall(function() knife.Parent = myChar end)
     end
 
     local events = knife:FindFirstChild("Events")
