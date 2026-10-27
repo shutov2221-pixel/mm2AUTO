@@ -479,6 +479,7 @@ RegisterRemoteHook("RoleSelect", function(...)
     Log(string.format("🎭 [RoleSelect] Выдана роль: %s | Параметры: %s", tostring(role), SerializeArgs(...)), "ROUND")
     LblRoundStatus.Text = "Раунд: Выдача ролей (" .. tostring(role) .. ")"
     LblRoundStatus.TextColor3 = Color3.fromRGB(100, 220, 255)
+    EndVoting("Выданы роли (RoleSelect)")
 end)
 
 -- 2. RoundStart: Официальный старт раунда
@@ -487,6 +488,7 @@ RegisterRemoteHook("RoundStart", function(...)
     Log(string.format("🚀 [RoundStart] Раунд официально НАЧАТ! Длительность: %s сек | Параметры: %s", tostring(duration), SerializeArgs(...)), "ROUND")
     LblRoundStatus.Text = "Раунд: ИДЁТ (" .. tostring(duration) .. "с)"
     LblRoundStatus.TextColor3 = Color3.fromRGB(100, 255, 120)
+    EndVoting("Раунд стартовал (RoundStart)")
 end)
 
 -- 3. RoundEndFade: Завершение раунда сервером
@@ -668,6 +670,8 @@ local function InspectMapCandidate(child: Instance)
         Log(string.format("🗺️ [КАРТА] СПАВН КАРТЫ: '%s' (Класс: %s, Spawns=%s, CoinContainer=%s)", 
             child.Name, child.ClassName, tostring(spawns ~= nil), tostring(container ~= nil)), "MAP")
 
+        EndVoting("Заспавнилась карта '" .. child.Name .. "'")
+
         if container then
             HookCoinContainer(container)
         else
@@ -718,17 +722,30 @@ table.insert(activeConnections, wsAddConn)
 local isVotingActive = false
 local lastVoteOptions = ""
 
+local function EndVoting(reason: string)
+    if isVotingActive then
+        isVotingActive = false
+        Log(string.format("🏁 [ГОЛОСОВАНИЕ] ГОЛОСОВАНИЕ ЗАВЕРШЕНО! Причина: %s", reason), "VOTE")
+        LblVoteStatus.Text = "Голосование: Завершено"
+        LblVoteStatus.TextColor3 = Color3.fromRGB(100, 255, 120)
+    end
+end
+
 local function CheckVotingState()
+    -- 1. Если на сервере уже есть активная карта раунда — голосование невозможно
+    if CurrentMapInstance ~= nil and CurrentMapInstance.Parent == Workspace then
+        if isVotingActive then
+            EndVoting("Карта раунда активна в Workspace (" .. CurrentMapInstance.Name .. ")")
+        end
+        return
+    end
+
     local lobby = Workspace:FindFirstChild("Lobby")
     local votePadsFolder = lobby and lobby:FindFirstChild("VotePads")
 
     if not votePadsFolder then
         if isVotingActive then
-            isVotingActive = false
-            lastVoteOptions = ""
-            Log("🗳️ [ГОЛОСОВАНИЕ] VotePads исчезли — голосование окончено", "VOTE")
-            LblVoteStatus.Text = "Голосование: Окончено"
-            LblVoteStatus.TextColor3 = Color3.fromRGB(150, 150, 150)
+            EndVoting("VotePads не найдены в лобби")
         end
         return
     end
@@ -760,13 +777,13 @@ local function CheckVotingState()
         end
     end
 
-    if #currentMapNames > 0 then
+    if #currentMapNames >= 2 then
         table.sort(currentMapNames)
         local optionsStr = table.concat(currentMapNames, " | ")
 
         if not isVotingActive or optionsStr ~= lastVoteOptions then
             if not isVotingActive then
-                Log(string.format("🗳️ [ГОЛОСОВАНИЕ] НАЧАЛОСЬ ГОЛОСОВАНИЕ ЗА КАРТЫ! Варианты: %s", optionsStr), "VOTE")
+                Log(string.format("🗳️ [ГОЛОСОВАНИЕ] ГОЛОСОВАНИЕ АКТИВНО! Варианты: %s", optionsStr), "VOTE")
             else
                 Log(string.format("🗳️ [ГОЛОСОВАНИЕ: ОБНОВЛЕНИЕ] %s (Всего голосов: %d)", optionsStr, totalVotes), "VOTE")
             end
@@ -777,11 +794,7 @@ local function CheckVotingState()
         end
     else
         if isVotingActive then
-            isVotingActive = false
-            Log(string.format("🏁 [ГОЛОСОВАНИЕ] ГОЛОСОВАНИЕ ЗАВЕРШЕНО! Панели скрыты сервером. Выбор карты...", lastVoteOptions), "VOTE")
-            lastVoteOptions = ""
-            LblVoteStatus.Text = "Голосование: Выбор завершен!"
-            LblVoteStatus.TextColor3 = Color3.fromRGB(100, 255, 120)
+            EndVoting("Панели голосования пусты")
         end
     end
 end
