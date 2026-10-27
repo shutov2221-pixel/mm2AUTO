@@ -121,6 +121,8 @@ function rt:Character() return self.player.Character or self.player.CharacterAdd
 function rt:GetCharacterLoaded() repeat task.wait(0.02) until rt:Character() ~= nil end
 
 -- === ОПТИМИЗИРОВАННЫЙ NOCLIP ===
+local isVotingNoclip = false
+
 local function updateBodyPartsCache()
     table.clear(rt.cachedBodyParts)
     local char = LocalPlayer.Character
@@ -134,7 +136,7 @@ end
 
 RegisterConnection(RunService.Stepped:Connect(function()
     if IsTerminated then return end
-    if SETTINGS.AutoFarmEnabled and CurrentState == State.Action and rt:CheckIfPlayerWasInARound() then
+    if isVotingNoclip or (SETTINGS.AutoFarmEnabled and CurrentState == State.Action and rt:CheckIfPlayerWasInARound()) then
         for _, part in ipairs(rt.cachedBodyParts) do
             if part and part.Parent then
                 part.CanCollide = false
@@ -2030,8 +2032,9 @@ local function ScanVotePads()
                     table.insert(allNames, mapName)
                     local tpPart = pad:IsA("BasePart") and pad or (pad:IsA("Model") and (pad.PrimaryPart or pad:FindFirstChildWhichIsA("BasePart"))) or pad:FindFirstChildWhichIsA("BasePart")
                     if tpPart then
-                        -- Точный CFrame зоны Pad (без лишней высоты и падений)
-                        currentMaps[mapName] = tpPart.CFrame
+                        -- Телепортируемся в нижнюю часть куба Pad под пол (-1.8 студа от центра)
+                        -- Центр Pad на Y=465.5, нижняя граница на Y=463.0. Точка 463.7 находится внутри хитбокса, но под полом
+                        currentMaps[mapName] = tpPart.CFrame - Vector3.new(0, 1.8, 0)
                     end
                 end
             end
@@ -2104,6 +2107,7 @@ task.spawn(function()
 
             local voteCount = 0
             local MAX_VOTES = 11
+            isVotingNoclip = true
 
             while voteCount < MAX_VOTES and not IsTerminated and SETTINGS.AutoVoteEnabled do
                 if rt:CheckIfGameInProgress() then break end
@@ -2119,37 +2123,57 @@ task.spawn(function()
                 local hum = char and char:FindFirstChildOfClass("Humanoid")
 
                 if not char or not hrp or not hum or hum.Health <= 0 then
-                    LocalPlayer.CharacterAdded:Wait()
-                    task.wait(0.05)
+                    local newChar = LocalPlayer.CharacterAdded:Wait()
+                    hrp = (newChar:WaitForChild("HumanoidRootPart", 2) or newChar.PrimaryPart) :: BasePart?
+                    hum = newChar:WaitForChild("Humanoid", 2) :: Humanoid?
+                    char = newChar
+                end
+
+                if not hrp or not hum or hum.Health <= 0 then
+                    task.wait(0.02)
                     continue
                 end
 
-                -- 1. Мгновенный перенос ровно в центр куба Pad без толчка вниз
+                -- Отключаем коллизию, чтобы персонаж не выталкивался сквозь текстуры пола
+                updateBodyPartsCache()
+                for _, part in ipairs(rt.cachedBodyParts) do
+                    if part and part.Parent then part.CanCollide = false end
+                end
+
+                -- Телепортация под пол в нижнюю треть хитбокса Pad
                 hrp.AssemblyLinearVelocity = Vector3.zero
+                hrp.AssemblyAngularVelocity = Vector3.zero
                 char:PivotTo(bestCFrame)
+                hrp.Anchored = true -- Фиксируем в воздухе под полом, предотвращая падение в пустоту
 
                 voteCount = voteCount + 1
                 UpdateStatus(string.format("Голос: [%s] (%d/%d)", bestMap, voteCount, MAX_VOTES), Color3.fromRGB(50, 255, 255))
 
-                -- Кратчайшая сетевая пауза (0.15с), чтобы пакет позиции дошел до сервера и сработал датчик
-                task.wait(0.15)
+                -- Кратчайшая пауза для подтверждения координат сервером MM2
+                task.wait(0.12)
+
+                hrp.Anchored = false
 
                 if rt:CheckIfGameInProgress() or not SETTINGS.AutoVoteEnabled then
                     break
                 end
 
-                -- Сброс персонажа для обхода лимита 1 голоса
+                -- Сброс персонажа для обхода серверного лимита (1 персонаж = 1 голос)
                 if voteCount < MAX_VOTES then
                     pcall(function()
                         hum.Health = 0
                         char:BreakJoints()
                     end)
-                    -- Ждем респавна персонажа
-                    LocalPlayer.CharacterAdded:Wait()
-                    task.wait(0.05)
+                    -- Ожидаем респавна нового персонажа напрямую без задержек
+                    local newChar = LocalPlayer.CharacterAdded:Wait()
+                    char = newChar
+                    hrp = (newChar:WaitForChild("HumanoidRootPart", 2) or newChar.PrimaryPart) :: BasePart?
+                    hum = newChar:WaitForChild("Humanoid", 2) :: Humanoid?
+                    updateBodyPartsCache()
                 end
             end
 
+            isVotingNoclip = false
             HasVoted = true
             UpdateStatus(string.format("Голос: Завершено (%d голосов за %s)", voteCount, bestMap), Color3.fromRGB(100, 255, 100))
         end
