@@ -2032,9 +2032,8 @@ local function ScanVotePads()
                     table.insert(allNames, mapName)
                     local tpPart = pad:IsA("BasePart") and pad or (pad:IsA("Model") and (pad.PrimaryPart or pad:FindFirstChildWhichIsA("BasePart"))) or pad:FindFirstChildWhichIsA("BasePart")
                     if tpPart then
-                        -- Телепортируемся в нижнюю часть куба Pad под пол (-1.8 студа от центра)
-                        -- Центр Pad на Y=465.5, нижняя граница на Y=463.0. Точка 463.7 находится внутри хитбокса, но под полом
-                        currentMaps[mapName] = tpPart.CFrame - Vector3.new(0, 1.8, 0)
+                        -- Точный CFrame зоны Pad (HRP на Y=466.5, прямо в центре рабочей зоны детектора)
+                        currentMaps[mapName] = tpPart.CFrame + Vector3.new(0, 1.0, 0)
                     end
                 end
             end
@@ -2134,25 +2133,30 @@ task.spawn(function()
                     continue
                 end
 
-                -- Отключаем коллизию, чтобы персонаж не выталкивался сквозь текстуры пола
+                -- Отключаем коллизию, чтобы не толкать других игроков
                 updateBodyPartsCache()
                 for _, part in ipairs(rt.cachedBodyParts) do
                     if part and part.Parent then part.CanCollide = false end
                 end
 
-                -- Телепортация под пол в нижнюю треть хитбокса Pad
+                -- Зависаем в воздухе без падения (BodyVelocity вместо Anchored, чтобы НЕ ломать репликацию на сервер)
+                local holdV = hrp:FindFirstChild("VoteHover") or Instance.new("BodyVelocity")
+                holdV.Name = "VoteHover"
+                holdV.Velocity = Vector3.zero
+                holdV.MaxForce = Vector3.new(0, 9e9, 0)
+                holdV.Parent = hrp
+
                 hrp.AssemblyLinearVelocity = Vector3.zero
                 hrp.AssemblyAngularVelocity = Vector3.zero
                 char:PivotTo(bestCFrame)
-                hrp.Anchored = true -- Фиксируем в воздухе под полом, предотвращая падение в пустоту
 
                 voteCount = voteCount + 1
                 UpdateStatus(string.format("Голос: [%s] (%d/%d)", bestMap, voteCount, MAX_VOTES), Color3.fromRGB(50, 255, 255))
 
-                -- Кратчайшая пауза для подтверждения координат сервером MM2
-                task.wait(0.12)
+                -- Пауза для гарантированного подтверждения координат сервером MM2
+                task.wait(0.18)
 
-                hrp.Anchored = false
+                if holdV and holdV.Parent then holdV:Destroy() end
 
                 if rt:CheckIfGameInProgress() or not SETTINGS.AutoVoteEnabled then
                     break
