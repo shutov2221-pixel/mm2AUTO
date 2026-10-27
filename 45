@@ -90,7 +90,7 @@ local TitleLabel = Instance.new("TextLabel")
 TitleLabel.Size = UDim2.new(1, -70, 1, 0)
 TitleLabel.Position = UDim2.new(0, 10, 0, 0)
 TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "🛰 MM2 ROUND & STATE MONITOR v2.0"
+TitleLabel.Text = "🛰 MM2 ROUND & STATE MONITOR v3.0"
 TitleLabel.TextColor3 = Color3.fromRGB(110, 210, 255)
 TitleLabel.Font = Enum.Font.GothamBold
 TitleLabel.TextSize = 12
@@ -612,8 +612,12 @@ local function CheckCoinContainerCoins(container: Instance): number
 end
 
 local function HookCoinContainer(coinContainer: Instance)
+    if CurrentCoinContainer == coinContainer then return end
     CurrentCoinContainer = coinContainer
     local initialCount = CheckCoinContainerCoins(coinContainer)
+    if initialCount > 0 then
+        coinSpawnTracked = true
+    end
     LblCoinsInfo.Text = string.format("Монеты: %d на карте", initialCount)
 
     local spawnDelta = (mapSpawnTick > 0) and string.format("(через %.2fc после карты)", tick() - mapSpawnTick) or ""
@@ -656,53 +660,95 @@ local function HookCoinContainer(coinContainer: Instance)
     table.insert(activeConnections, ancConn)
 end
 
+local function IsMapCandidate(child: Instance): boolean
+    if not child:IsA("Model") and not child:IsA("Folder") then return false end
+    if child == LocalPlayer.Character or (child:IsA("Model") and Players:GetPlayerFromCharacter(child)) then return false end
+    if child.Name == "Lobby" or child.Name == "Terrain" or child.Name == "Camera" then return false end
+    if child.Name == "RaycastFilter" or child.Name == "GunDrop" then return false end
+    return true
+end
+
+local function CleanupMap(child: Instance)
+    if CurrentMapInstance == child then
+        local lifetime = (mapSpawnTick > 0) and string.format("(жила %.1fc)", tick() - mapSpawnTick) or ""
+        Log(string.format("🧹 [КАРТА] ОЧИСТКА КАРТЫ: '%s' удалена из Workspace %s", child.Name, lifetime), "MAP")
+        CurrentMapInstance = nil
+        CurrentCoinContainer = nil
+        coinSpawnTracked = false
+        mapSpawnTick = 0
+        LblCurrentMap.Text = "Карта: (нет)"
+        LblCurrentMap.TextColor3 = Color3.fromRGB(180, 180, 180)
+    end
+end
+
+local function RegisterMap(child: Instance, spawns: Instance?, container: Instance?)
+    if CurrentMapInstance == child then return end
+    CurrentMapInstance = child
+    mapSpawnTick = tick()
+    coinSpawnTracked = false
+
+    LblCurrentMap.Text = "Карта: " .. child.Name
+    LblCurrentMap.TextColor3 = Color3.fromRGB(100, 255, 150)
+    LblRoundStatus.Text = "Раунд: ИДЁТ (Карта на сервере)"
+    LblRoundStatus.TextColor3 = Color3.fromRGB(100, 255, 120)
+
+    EndVoting("Спавн карты '" .. child.Name .. "'")
+    Log(string.format("🗺️ [КАРТА] СПАВН КАРТЫ: '%s' (Класс: %s, Spawns=%s, CoinContainer=%s)", 
+        child.Name, child.ClassName, tostring(spawns ~= nil), tostring(container ~= nil)), "MAP")
+
+    if container then
+        HookCoinContainer(container)
+    else
+        -- Ждем появления CoinContainer, если он загружается следом
+        local ccConn: RBXScriptConnection? = nil
+        ccConn = child.ChildAdded:Connect(function(newChild)
+            if newChild.Name == "CoinContainer" then
+                if ccConn then
+                    ccConn:Disconnect()
+                    ccConn = nil
+                end
+                HookCoinContainer(newChild)
+            end
+        end)
+        if ccConn then table.insert(activeConnections, ccConn) end
+
+        -- Дополнительный фоновый WaitForChild на случай задержки сетевой репликации
+        task.spawn(function()
+            local cc = child:WaitForChild("CoinContainer", 15)
+            if cc and not CurrentCoinContainer and CurrentMapInstance == child then
+                HookCoinContainer(cc)
+            end
+        end)
+    end
+
+    local remConn = child.AncestryChanged:Connect(function(_, parent)
+        if not parent or parent ~= Workspace then
+            CleanupMap(child)
+        end
+    end)
+    table.insert(activeConnections, remConn)
+end
+
 local function InspectMapCandidate(child: Instance)
-    -- Исключаем служебные папки и игроков
-    if child == LocalPlayer.Character or (child:IsA("Model") and Players:GetPlayerFromCharacter(child)) then return end
-    if child.Name == "Lobby" or child.Name == "Terrain" or child.Name == "Camera" then return end
+    if not IsMapCandidate(child) then return end
+    if CurrentMapInstance == child then return end
 
     local container = child:FindFirstChild("CoinContainer")
     local spawns = child:FindFirstChild("Spawns")
 
     if container or spawns then
-        CurrentMapInstance = child
-        mapSpawnTick = tick()
-        coinSpawnTracked = false
-        LblCurrentMap.Text = "Карта: " .. child.Name
-        LblCurrentMap.TextColor3 = Color3.fromRGB(100, 255, 150)
-        LblRoundStatus.Text = "Раунд: ИДЁТ (Карта на сервере)"
-        LblRoundStatus.TextColor3 = Color3.fromRGB(100, 255, 120)
-        EndVoting("Спавн карты '" .. child.Name .. "'")
-        Log(string.format("🗺️ [КАРТА] СПАВН КАРТЫ: '%s' (Класс: %s, Spawns=%s, CoinContainer=%s)", 
-            child.Name, child.ClassName, tostring(spawns ~= nil), tostring(container ~= nil)), "MAP")
-
-        if container then
-            HookCoinContainer(container)
-        else
-            -- Ждем появления CoinContainer, если он загружается следом
-            local ccConn: RBXScriptConnection? = nil
-            ccConn = child.ChildAdded:Connect(function(newChild)
-                if newChild.Name == "CoinContainer" then
-                    if ccConn then ccConn:Disconnect() end
-                    HookCoinContainer(newChild)
-                end
-            end)
-            if ccConn then table.insert(activeConnections, ccConn) end
-        end
-
-        local remConn = child.AncestryChanged:Connect(function(_, parent)
-            if not parent or parent ~= Workspace then
-                local lifetime = (mapSpawnTick > 0) and string.format("(жила %.1fc)", tick() - mapSpawnTick) or ""
-                Log(string.format("🧹 [КАРТА] ОЧИСТКА КАРТЫ: '%s' удалена из Workspace %s", child.Name, lifetime), "MAP")
-                if CurrentMapInstance == child then
-                    CurrentMapInstance = nil
-                    CurrentCoinContainer = nil
-                    LblCurrentMap.Text = "Карта: (нет)"
-                    LblCurrentMap.TextColor3 = Color3.fromRGB(180, 180, 180)
+        RegisterMap(child, spawns, container)
+    else
+        -- Детали карты (Spawns, CoinContainer) могут реплицироваться чуть позже события ChildAdded
+        task.spawn(function()
+            local foundSpawns = child:WaitForChild("Spawns", 3)
+            local foundContainer = child:FindFirstChild("CoinContainer")
+            if not isTerminated and child.Parent == Workspace and (foundSpawns or foundContainer) then
+                if CurrentMapInstance ~= child then
+                    RegisterMap(child, foundSpawns, foundContainer)
                 end
             end
         end)
-        table.insert(activeConnections, remConn)
     end
 end
 
@@ -711,12 +757,12 @@ local function GetWorkspaceMap(): Instance?
         return CurrentMapInstance
     end
     for _, child in ipairs(Workspace:GetChildren()) do
-        if child ~= LocalPlayer.Character and not (child:IsA("Model") and Players:GetPlayerFromCharacter(child)) then
-            if child.Name ~= "Lobby" and child.Name ~= "Terrain" and child.Name ~= "Camera" then
-                if child:FindFirstChild("CoinContainer") or child:FindFirstChild("Spawns") then
-                    CurrentMapInstance = child
-                    return child
-                end
+        if IsMapCandidate(child) then
+            local container = child:FindFirstChild("CoinContainer")
+            local spawns = child:FindFirstChild("Spawns")
+            if container or spawns then
+                RegisterMap(child, spawns, container)
+                return child
             end
         end
     end
@@ -739,12 +785,7 @@ table.insert(activeConnections, wsAddConn)
 
 -- Слушаем удаление карты из Workspace
 local wsRemConn = Workspace.ChildRemoved:Connect(function(child)
-    if child == CurrentMapInstance then
-        CurrentMapInstance = nil
-        CurrentCoinContainer = nil
-        LblCurrentMap.Text = "Карта: (нет)"
-        LblCurrentMap.TextColor3 = Color3.fromRGB(180, 180, 180)
-    end
+    CleanupMap(child)
 end)
 table.insert(activeConnections, wsRemConn)
 
@@ -765,6 +806,82 @@ local function DoEndVoting(reason: string?)
     end
 end
 EndVoting = DoEndVoting
+
+-- Проверка активности подиума голосования и извлечение данных с диагностикой метода скрытия
+local function GetPadVoteInfo(pad: Instance): (string?, number?, string)
+    local infoGui = pad:FindFirstChild("VoteInfoGui", true)
+    if not infoGui then
+        return nil, 0, "VoteInfoGui удалён (nil)"
+    end
+
+    -- 1. Свойство Enabled у SurfaceGui/BillboardGui
+    if (infoGui:IsA("SurfaceGui") or infoGui:IsA("BillboardGui") or infoGui:IsA("ScreenGui")) and not infoGui.Enabled then
+        return nil, 0, "VoteInfoGui.Enabled = false"
+    end
+
+    local mapName: string? = nil
+    local votes = 0
+    local anyTextLabelFound = false
+    local hiddenReason = "Нет видимых TextLabel"
+
+    for _, desc in ipairs(infoGui:GetDescendants()) do
+        if desc:IsA("TextLabel") then
+            anyTextLabelFound = true
+
+            if not desc.Visible then
+                hiddenReason = string.format("TextLabel '%s'.Visible = false", desc.Name)
+            elseif desc.TextTransparency >= 1 then
+                hiddenReason = string.format("TextLabel '%s'.TextTransparency = 1", desc.Name)
+            else
+                -- Проверяем видимость родительских контейнеров (Frame, CanvasGroup)
+                local isParentVisible = true
+                local parent = desc.Parent
+                while parent and parent ~= infoGui do
+                    if parent:IsA("GuiObject") then
+                        if not parent.Visible then
+                            isParentVisible = false
+                            hiddenReason = string.format("Родитель '%s' (%s).Visible = false", parent.Name, parent.ClassName)
+                            break
+                        end
+                        if parent:IsA("CanvasGroup") and parent.GroupTransparency >= 1 then
+                            isParentVisible = false
+                            hiddenReason = string.format("CanvasGroup '%s'.GroupTransparency = 1", parent.Name)
+                            break
+                        end
+                    end
+                    parent = parent.Parent
+                end
+
+                if isParentVisible then
+                    local cleanText = string.gsub(desc.Text, "^%s*(.-)%s*$", "%1")
+                    local lower = string.lower(cleanText)
+                    if cleanText ~= "" and lower ~= "label" then
+                        if string.find(lower, "votes") then
+                            local num = tonumber(string.match(cleanText, "%d+"))
+                            if num then votes = num end
+                        else
+                            if desc.Name == "MapName" or not mapName then
+                                mapName = cleanText
+                            end
+                        end
+                    else
+                        hiddenReason = string.format("TextLabel '%s'.Text пустой", desc.Name)
+                    end
+                end
+            end
+        end
+    end
+
+    if mapName and mapName ~= "" then
+        return mapName, votes, "Активен"
+    end
+
+    if not anyTextLabelFound then
+        hiddenReason = "Внутри VoteInfoGui нет TextLabel"
+    end
+
+    return nil, 0, hiddenReason
+end
 
 local function CheckVotingState()
     -- 1. Если в Workspace есть карта — голосование НЕ активно в любом случае
@@ -794,40 +911,16 @@ local function CheckVotingState()
 
     local currentMapNames = {}
     local totalVotes = 0
+    local padReasons = {}
 
     for _, pad in ipairs(votePadsFolder:GetChildren()) do
         if pad:IsA("BasePart") or pad:IsA("Model") then
-            local infoGui = pad:FindFirstChild("VoteInfoGui", true)
-            if infoGui then
-                local isGuiEnabled = true
-                if (infoGui:IsA("SurfaceGui") or infoGui:IsA("BillboardGui")) and not infoGui.Enabled then
-                    isGuiEnabled = false
-                end
-
-                if isGuiEnabled then
-                    local mapName: string? = nil
-                    local votes = 0
-                    for _, desc in ipairs(infoGui:GetDescendants()) do
-                        if desc:IsA("TextLabel") and desc.Text ~= "" then
-                            local cleanText = string.gsub(desc.Text, "^%s*(.-)%s*$", "%1")
-                            local lower = string.lower(cleanText)
-                            if cleanText ~= "" and lower ~= "label" then
-                                if string.find(lower, "votes") then
-                                    local num = tonumber(string.match(cleanText, "%d+"))
-                                    if num then votes = num end
-                                else
-                                    if desc.Name == "MapName" or not mapName then
-                                        mapName = cleanText
-                                    end
-                                end
-                            end
-                        end
-                    end
-                    if mapName and mapName ~= "" then
-                        table.insert(currentMapNames, string.format("%s (%d гол.)", mapName, votes))
-                        totalVotes = totalVotes + votes
-                    end
-                end
+            local mapName, votes, reason = GetPadVoteInfo(pad)
+            if mapName and mapName ~= "" then
+                table.insert(currentMapNames, string.format("%s (%d гол.)", mapName, votes))
+                totalVotes = totalVotes + votes
+            else
+                table.insert(padReasons, pad.Name .. ": " .. reason)
             end
         end
     end
@@ -853,7 +946,17 @@ local function CheckVotingState()
         end
     else
         if isVotingActive then
-            EndVoting("Панели голосования скрыты / пусты")
+            local uniqueMethods = {}
+            local seenMethods = {}
+            for _, r in ipairs(padReasons) do
+                local method = string.match(r, ": (.*)$") or r
+                if not seenMethods[method] then
+                    seenMethods[method] = true
+                    table.insert(uniqueMethods, method)
+                end
+            end
+            local methodSummary = #uniqueMethods > 0 and table.concat(uniqueMethods, " | ") or "VoteInfoGui отключен"
+            EndVoting(string.format("Панели скрыты сервером [Метод: %s]", methodSummary))
         end
     end
 end
