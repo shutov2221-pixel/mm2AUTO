@@ -435,6 +435,16 @@ end
 
 -- === ГЛОБАЛЬНЫЕ СЕТЕВЫЕ СЛУШАТЕЛИ РАУНДА ===
 local function SetupRemoteHooks()
+    local giveWeapon = FindRemoteEvent("GiveWeapon")
+    if giveWeapon then
+        RegisterConnection(giveWeapon.OnClientEvent:Connect(function(wName)
+            if IsTerminated then return end
+            if CurrentState == State.Action then
+                InspectAndEquipKnife()
+            end
+        end))
+    end
+
     local roleSelect = FindRemoteEvent("RoleSelect")
     if roleSelect then
         RegisterConnection(roleSelect.OnClientEvent:Connect(function(role)
@@ -794,15 +804,6 @@ local function FindRemainingAlivePlayer(): Player?
             return plr
         end
     end
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if plr ~= LocalPlayer then
-            local char = plr.Character
-            local hum = char and char:FindFirstChildOfClass("Humanoid")
-            if hum and hum.Health > 0 then
-                return plr
-            end
-        end
-    end
     return nil
 end
 
@@ -860,27 +861,44 @@ local function UnequipKnife()
 end
 
 -- =====================================================================
--- НАДЕЖНЫЙ TURBO-УДАР (DOUBLE-PULSE FIRETOUCH)
+-- БЕСШУМНЫЙ СЕТЕВОЙ ТУРБО-УДАР (SILENT REMOTE KILL ИЗ V4.2)
 -- =====================================================================
 local function TurboKill(targetPlayer: Player, knife: Tool): boolean
     local targetChar = targetPlayer.Character
     if not targetChar then return false end
 
-    local targetHRP = targetChar:FindFirstChild("HumanoidRootPart") or targetChar:FindFirstChild("Torso") or targetChar.PrimaryPart
+    local targetHRP = (targetChar:FindFirstChild("HumanoidRootPart") 
+        or targetChar:FindFirstChild("UpperTorso") 
+        or targetChar:FindFirstChild("Torso") 
+        or targetChar.PrimaryPart) :: BasePart?
     local targetHum = targetChar:FindFirstChildOfClass("Humanoid")
-    local handle = knife:FindFirstChild("Handle") or knife:FindFirstChildWhichIsA("BasePart")
-
-    if not targetHRP or not targetHum or targetHum.Health <= 0 or not handle then
+    if not targetHRP or not targetHum or targetHum.Health <= 0 then
         return false
     end
 
-    pcall(function() knife:Activate() end)
+    -- Сервер MM2 требует, чтобы нож находился в Character для валидации владельца
+    local myChar = LocalPlayer.Character
+    if myChar and knife.Parent ~= myChar then
+        pcall(function() knife.Parent = myChar end)
+    end
 
+    local events = knife:FindFirstChild("Events")
+    local stabEvent = events and events:FindFirstChild("KnifeStabbed") :: RemoteEvent?
+    local touchEvent = events and events:FindFirstChild("HandleTouched") :: RemoteEvent?
+
+    -- 1. СЕТЕВОЙ МЕТОД: Взвод урона и касание через внутренние RemoteEvents ножа (БЕЗ взмаха и анимации!)
+    if stabEvent and touchEvent then
+        pcall(function() stabEvent:FireServer() end)
+        pcall(function() touchEvent:FireServer(targetHRP) end)
+        return true
+    end
+
+    -- 2. Резервный метод: если нож без Events, используем классический импульс
+    pcall(function() knife:Activate() end)
+    local handle = knife:FindFirstChild("Handle") or knife:FindFirstChildWhichIsA("BasePart")
     local touchFn = firetouchinterest or firetouchtransmitter or (syn and syn.firetouchinterest)
-    if touchFn then
+    if handle and touchFn then
         pcall(function()
-            touchFn(targetHRP, handle, 0)
-            touchFn(targetHRP, handle, 1)
             touchFn(targetHRP, handle, 0)
             touchFn(targetHRP, handle, 1)
         end)
@@ -897,7 +915,16 @@ local function PreRoundKillChain()
 
     local knife = InspectAndEquipKnife()
     if not knife then
-        UpdateStatus("Зачистка: Нож не найден в инвентаре", Color3.fromRGB(255, 120, 120))
+        UpdateStatus("Зачистка: Ожидание выдачи ножа сервером...", Color3.fromRGB(255, 200, 100))
+        local waitKnifeStart = tick()
+        while not knife and tick() - waitKnifeStart < 30 and not IsTerminated and RoundInProgress() and rt:CheckIfPlayerWasInARound() do
+            task.wait(0.2)
+            knife = InspectAndEquipKnife()
+        end
+    end
+
+    if not knife then
+        UpdateStatus("Зачистка: Нож не выдан сервером", Color3.fromRGB(255, 120, 120))
         return
     end
 
