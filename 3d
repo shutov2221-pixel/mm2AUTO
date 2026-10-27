@@ -32,7 +32,7 @@ ScreenGui.Name = "MM2_Region_Scanner_3D"
 ScreenGui.Parent = GetSafeGuiParent()
 ScreenGui.ResetOnSpawn = false
 
-local EXPANDED_SIZE = UDim2.new(0, 360, 0, 338)
+local EXPANDED_SIZE = UDim2.new(0, 360, 0, 375)
 local COLLAPSED_SIZE = UDim2.new(0, 360, 0, 144)
 
 local MainFrame = Instance.new("Frame", ScreenGui)
@@ -203,10 +203,31 @@ ClearBtn.Font = Enum.Font.GothamBold
 ClearBtn.TextSize = 11
 Instance.new("UICorner", ClearBtn).CornerRadius = UDim.new(0, 6)
 
+-- Ряд 4: Кнопки аудита подиумов и тестирования голосования без ТП
+local BtnAuditPads = Instance.new("TextButton", MainFrame)
+BtnAuditPads.Size = UDim2.new(0.5, -10, 0, 26)
+BtnAuditPads.Position = UDim2.new(0, 10, 0, 140)
+BtnAuditPads.BackgroundColor3 = Color3.fromRGB(40, 110, 170)
+BtnAuditPads.Text = "🗳️ АУДИТ ПОДИУМОВ"
+BtnAuditPads.TextColor3 = Color3.new(1, 1, 1)
+BtnAuditPads.Font = Enum.Font.GothamBold
+BtnAuditPads.TextSize = 10
+Instance.new("UICorner", BtnAuditPads).CornerRadius = UDim.new(0, 6)
+
+local BtnTestVote = Instance.new("TextButton", MainFrame)
+BtnTestVote.Size = UDim2.new(0.5, -5, 0, 26)
+BtnTestVote.Position = UDim2.new(0.5, 5, 0, 140)
+BtnTestVote.BackgroundColor3 = Color3.fromRGB(160, 40, 140)
+BtnTestVote.Text = "🧪 ТЕСТ БЕЗ ТП"
+BtnTestVote.TextColor3 = Color3.new(1, 1, 1)
+BtnTestVote.Font = Enum.Font.GothamBold
+BtnTestVote.TextSize = 10
+Instance.new("UICorner", BtnTestVote).CornerRadius = UDim.new(0, 6)
+
 -- Лог панель
 local LogContainer = Instance.new("ScrollingFrame", MainFrame)
-LogContainer.Size = UDim2.new(1, -20, 1, -152)
-LogContainer.Position = UDim2.new(0, 10, 0, 142)
+LogContainer.Size = UDim2.new(1, -20, 1, -180)
+LogContainer.Position = UDim2.new(0, 10, 0, 172)
 LogContainer.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
 LogContainer.ScrollBarThickness = 4
 LogContainer.CanvasSize = UDim2.new(0, 0, 0, 0)
@@ -420,3 +441,179 @@ ScanBtn.MouseButton1Click:Connect(function()
         LogScanResult("Сбор данных завершен. Можно копировать!", Color3.fromRGB(100, 255, 100))
     end
 end)
+
+-- =====================================================================
+-- ФУНКЦИИ АУДИТА СТЕНДОВ И ТЕСТИРОВАНИЯ ГОЛОСОВАНИЯ БЕЗ ТЕЛЕПОРТА
+-- =====================================================================
+local function AuditVotePads()
+    lastScanLogs = {}
+    LogScanResult("=== АУДИТ СТЕНДОВ ГОЛОСОВАНИЯ (VOTEPADS) ===", Color3.fromRGB(255, 200, 50))
+    local lobby = Workspace:FindFirstChild("Lobby")
+    if not lobby then
+        LogScanResult("❌ Workspace.Lobby не найден!", Color3.fromRGB(255, 80, 80))
+        return
+    end
+    local votePads = lobby:FindFirstChild("VotePads")
+    if not votePads then
+        LogScanResult("❌ Workspace.Lobby.VotePads не найден!", Color3.fromRGB(255, 80, 80))
+        return
+    end
+
+    for _, pad in ipairs(votePads:GetChildren()) do
+        LogScanResult(string.format("📌 Объект: '%s' [Класс: %s]", pad.Name, pad.ClassName), Color3.fromRGB(100, 220, 255))
+        
+        -- Поиск GUI стенда
+        local infoGui = pad:FindFirstChild("VoteInfoGui", true)
+        if infoGui then
+            local isEnabled = (infoGui:IsA("SurfaceGui") or infoGui:IsA("BillboardGui") or infoGui:IsA("ScreenGui")) and (infoGui :: any).Enabled
+            LogScanResult(string.format("   ↳ VoteInfoGui: Enabled=%s", tostring(isEnabled)), Color3.fromRGB(200, 200, 255))
+            for _, txt in ipairs(infoGui:GetDescendants()) do
+                if txt:IsA("TextLabel") and txt.Text ~= "" and txt.Text ~= "Label" then
+                    LogScanResult(string.format("      Текст: '%s' (Visible=%s, Transparency=%.1f)", txt.Text, tostring(txt.Visible), txt.TextTransparency), Color3.fromRGB(255, 255, 120))
+                end
+            end
+        end
+
+        -- Поиск всех BaseParts в подиуме
+        local parts = {}
+        if pad:IsA("BasePart") then table.insert(parts, pad) end
+        for _, desc in ipairs(pad:GetDescendants()) do
+            if desc:IsA("BasePart") then table.insert(parts, desc) end
+        end
+
+        LogScanResult(string.format("   ↳ Найдено BaseParts: %d шт.", #parts), Color3.fromRGB(180, 180, 180))
+        for _, p in ipairs(parts) do
+            local hasTT = p:FindFirstChildWhichIsA("TouchTransmitter") ~= nil
+            local sizeStr = string.format("%.1fx%.1fx%.1f", p.Size.X, p.Size.Y, p.Size.Z)
+            local posStr = string.format("%.1f, %.1f, %.1f", p.Position.X, p.Position.Y, p.Position.Z)
+            LogScanResult(string.format("      Part: '%s' | Size: %s | CanCollide: %s | TT: %s | Pos: (%s)",
+                p.Name, sizeStr, tostring(p.CanCollide), tostring(hasTT), posStr),
+                hasTT and Color3.fromRGB(255, 100, 100) or Color3.fromRGB(160, 220, 160))
+        end
+    end
+    LogScanResult("Аудит завершен! Нажмите 'КОПИРОВАТЬ' для отправки лога.", Color3.fromRGB(100, 255, 100))
+end
+
+local function TestVoteWithoutTeleport()
+    lastScanLogs = {}
+    LogScanResult("=== ТЕСТ ГОЛОСОВАНИЯ БЕЗ ТЕЛЕПОРТАЦИИ ===", Color3.fromRGB(255, 180, 50))
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not char or not hrp then
+        LogScanResult("❌ Персонаж или HumanoidRootPart не найден!", Color3.fromRGB(255, 80, 80))
+        return
+    end
+
+    local touchFn = firetouchinterest or firetouchtransmitter or (syn and syn.firetouchinterest)
+    if not touchFn then
+        LogScanResult("❌ firetouchinterest не поддерживается вашим эксплойтом!", Color3.fromRGB(255, 80, 80))
+        return
+    end
+
+    local lobby = Workspace:FindFirstChild("Lobby")
+    local votePads = lobby and lobby:FindFirstChild("VotePads")
+    if not votePads then
+        LogScanResult("❌ VotePads не найдены в лобби!", Color3.fromRGB(255, 80, 80))
+        return
+    end
+
+    -- Находим активный стенд с VoteInfoGui
+    local targetPad: Instance? = nil
+    local targetMapName = ""
+    local initialVotes = -1
+    local votesLabel: TextLabel? = nil
+
+    for _, pad in ipairs(votePads:GetChildren()) do
+        local gui = pad:FindFirstChild("VoteInfoGui", true)
+        if gui and ((gui:IsA("SurfaceGui") or gui:IsA("BillboardGui") or gui:IsA("ScreenGui")) and (gui :: any).Enabled) then
+            for _, txt in ipairs(gui:GetDescendants()) do
+                if txt:IsA("TextLabel") and string.find(string.lower(txt.Text), "votes") then
+                    local num = tonumber(string.match(txt.Text, "%d+"))
+                    if num then
+                        initialVotes = num
+                        votesLabel = txt
+                        targetPad = pad
+                        break
+                    end
+                end
+            end
+            if targetPad then
+                for _, txt in ipairs(gui:GetDescendants()) do
+                    if txt:IsA("TextLabel") and txt ~= votesLabel and txt.Text ~= "" and txt.Text ~= "Label" then
+                        targetMapName = txt.Text
+                        break
+                    end
+                end
+                break
+            end
+        end
+    end
+
+    if not targetPad or not votesLabel then
+        LogScanResult("⚠️ Голосование сейчас НЕ активно (стенды выключены)", Color3.fromRGB(255, 150, 50))
+        LogScanResult("Дождитесь фазы голосования в лобби и нажмите кнопку снова!", Color3.fromRGB(200, 200, 200))
+        return
+    end
+
+    LogScanResult(string.format("🎯 Тестовый стенд: '%s' (Карта: '%s')", targetPad.Name, targetMapName), Color3.fromRGB(100, 220, 255))
+    LogScanResult(string.format("📊 Число голосов ДО теста: %d", initialVotes), Color3.fromRGB(255, 255, 100))
+
+    -- Собираем все детали подиума
+    local testParts: { BasePart } = {}
+    if targetPad:IsA("BasePart") then table.insert(testParts, targetPad) end
+    for _, d in ipairs(targetPad:GetDescendants()) do
+        if d:IsA("BasePart") then table.insert(testParts, d) end
+    end
+
+    LogScanResult(string.format("📡 Отправка touchinterest по %d деталям подиума...", #testParts), Color3.fromRGB(200, 200, 255))
+
+    for _, p in ipairs(testParts) do
+        pcall(function()
+            touchFn(hrp, p, 0)
+            task.wait(0.02)
+            touchFn(hrp, p, 1)
+        end)
+    end
+
+    -- Ждём реакции сервера
+    task.wait(0.6)
+
+    local currentVotes = tonumber(string.match(votesLabel.Text, "%d+")) or initialVotes
+    LogScanResult(string.format("📊 Число голосов ПОСЛЕ общего импульса: %d", currentVotes), Color3.fromRGB(255, 255, 100))
+
+    if currentVotes > initialVotes then
+        LogScanResult("🎉 УСПЕХ! ГОЛОС ЗАСЧИТАН ДИСТАНЦИОННО БЕЗ ТЕЛЕПОРТА!", Color3.fromRGB(50, 255, 120))
+        LogScanResult("Можно внедрять в 1mg.lua!", Color3.fromRGB(100, 255, 100))
+    else
+        LogScanResult("⚠️ Пробуем поочередный тест каждой детали...", Color3.fromRGB(255, 180, 50))
+
+        task.spawn(function()
+            local successPart: BasePart? = nil
+            for _, p in ipairs(testParts) do
+                local beforeV = tonumber(string.match(votesLabel.Text, "%d+")) or initialVotes
+                pcall(function()
+                    touchFn(hrp, p, 0)
+                    task.wait(0.05)
+                    touchFn(hrp, p, 1)
+                end)
+                task.wait(0.4)
+                local afterV = tonumber(string.match(votesLabel.Text, "%d+")) or beforeV
+                if afterV > beforeV then
+                    successPart = p
+                    LogScanResult(string.format("✅ ТОЧНОЕ ПОПАДАНИЕ! Сенсор: '%s' (%s)", p.Name, p.ClassName), Color3.fromRGB(50, 255, 120))
+                    LogScanResult("Сенсор найден! Нажмите 'КОПИРОВАТЬ' и пришлите логи.", Color3.fromRGB(100, 255, 100))
+                    break
+                else
+                    LogScanResult(string.format("   Part '%s' -> нет реакции", p.Name), Color3.fromRGB(150, 150, 150))
+                end
+            end
+            if not successPart then
+                LogScanResult("ℹ️ Ни одна деталь не среагировала без телепортации.", Color3.fromRGB(255, 150, 150))
+                LogScanResult("Это означает, что сервер MM2 проверяет дистанцию между игроком и подиумом.", Color3.fromRGB(200, 200, 200))
+            end
+        end)
+    end
+end
+
+BtnAuditPads.MouseButton1Click:Connect(AuditVotePads)
+BtnTestVote.MouseButton1Click:Connect(TestVoteWithoutTeleport)
