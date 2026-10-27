@@ -457,25 +457,32 @@ end
 -- =====================================================================
 -- НАДЕЖНЫЙ ТУРБО-УДАР (DOUBLE-PULSE FIRETOUCH)
 -- =====================================================================
-local function TurboKill(targetPlayer: Player, knife: Tool): boolean
+local function SilentRemoteKill(targetPlayer: Player, knife: Tool): boolean
     local targetChar = targetPlayer.Character
     if not targetChar then return false end
 
     local targetHRP = targetChar:FindFirstChild("HumanoidRootPart") or targetChar:FindFirstChild("Torso") :: BasePart?
     local targetHum = targetChar:FindFirstChildOfClass("Humanoid")
-    local handle = knife:FindFirstChild("Handle") :: BasePart?
-
-    if not targetHRP or not targetHum or targetHum.Health <= 0 or not handle then
+    if not targetHRP or not targetHum or targetHum.Health <= 0 then
         return false
     end
 
-    pcall(function() knife:Activate() end)
+    local events = knife:FindFirstChild("Events")
+    local stabEvent = events and events:FindFirstChild("KnifeStabbed") :: RemoteEvent?
+    local touchEvent = events and events:FindFirstChild("HandleTouched") :: RemoteEvent?
 
-    if firetouchinterest then
-        -- Двойной импульс касания для 100% срабатывания физики сервера
+    if stabEvent and touchEvent then
+        -- 1. Взводим серверное окно урона (без анимации, без Activate())
+        pcall(function() stabEvent:FireServer() end)
+        -- 2. Сразу же отправляем попадание по хитбоксу жертвы
+        pcall(function() touchEvent:FireServer(targetHRP) end)
+        return true
+    end
+
+    -- Fallback: если нож без Events (кастомный), используем физический импульс
+    local handle = knife:FindFirstChild("Handle") :: BasePart?
+    if handle and firetouchinterest then
         pcall(function()
-            firetouchinterest(targetHRP, handle, 0)
-            firetouchinterest(targetHRP, handle, 1)
             firetouchinterest(targetHRP, handle, 0)
             firetouchinterest(targetHRP, handle, 1)
         end)
@@ -499,7 +506,7 @@ local function RunSingleTargetKill()
     end
 
     local startTime = tick()
-    local ok = TurboKill(target, knife)
+    local ok = SilentRemoteKill(target, knife)
     if ok then
         local ms = math.floor((tick() - startTime) * 1000)
         Log(string.format("🎯 1-Shot нанесён по %s за %d мс!", target.DisplayName, ms), "SUCCESS")
@@ -567,7 +574,7 @@ local function AttackTargetPlayer(targetPlayer: Player, knife: Tool): boolean
 
     killAttemptsForTarget = killAttemptsForTarget + 1
     local tStart = tick()
-    local ok = TurboKill(targetPlayer, knife)
+    local ok = SilentRemoteKill(targetPlayer, knife)
     local ms = math.floor((tick() - tStart) * 1000)
 
     if killAttemptsForTarget == 1 then
@@ -863,40 +870,9 @@ local function StopSniffer()
     UpdateStatus("Remote Sniffer остановлен", Color3.fromRGB(200, 200, 200))
 end
 
-local isNamecallHooked = false
-local oldNamecall = nil
-
+-- __namecall hook удалён: раскрыт прямой протокол ножа (KnifeStabbed + HandleTouched)
 local function SetupOutgoingHook()
-    if isNamecallHooked then return end
-    local hmm = hookmetamethod or (syn and syn.hookmetamethod)
-    local gnm = getnamecallmethod or (syn and syn.getnamecallmethod)
-    if typeof(hmm) == "function" and typeof(gnm) == "function" then
-        local ok, err = pcall(function()
-            oldNamecall = hmm(game, "__namecall", function(self, ...)
-                if snifferActive and typeof(self) == "Instance" then
-                    local method = gnm()
-                    if method == "FireServer" and self:IsA("RemoteEvent") then
-                        local okName, path = pcall(function() return self:GetFullName() end)
-                        local name = okName and path or self.Name
-                        Log(string.format("📤 [FIRE_SERVER] %s >> %s", name, SerializeArgs(...)), "FLASH")
-                    elseif method == "InvokeServer" and self:IsA("RemoteFunction") then
-                        local okName, path = pcall(function() return self:GetFullName() end)
-                        local name = okName and path or self.Name
-                        Log(string.format("📤 [INVOKE_SERVER] %s >> %s", name, SerializeArgs(...)), "FLASH")
-                    end
-                end
-                return oldNamecall(self, ...)
-            end)
-        end)
-        if ok then
-            isNamecallHooked = true
-            Log("✅ [HOOK] Перехват исходящих вызовов (FireServer) активен!", "SUCCESS")
-        else
-            Log("⚠️ [HOOK] Не удалось установить hookmetamethod: " .. tostring(err), "WARN")
-        end
-    else
-        Log("ℹ️ [HOOK] hookmetamethod недоступен в этом эксплойте, слушаем входящие события", "INFO")
-    end
+    Log("ℹ️ [HOOK] __namecall не используется — протокол ножа известен напрямую", "INFO")
 end
 
 local function HookRemote(remote)
