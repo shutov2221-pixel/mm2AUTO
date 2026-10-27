@@ -90,7 +90,7 @@ local TitleLabel = Instance.new("TextLabel")
 TitleLabel.Size = UDim2.new(1, -118, 1, 0)
 TitleLabel.Position = UDim2.new(0, 10, 0, 0)
 TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "🛰 MM2 ROUND & STATE MONITOR v1.0"
+TitleLabel.Text = "🛰 MM2 ROUND & STATE MONITOR v2.1"
 TitleLabel.TextColor3 = Color3.fromRGB(110, 210, 255)
 TitleLabel.Font = Enum.Font.GothamBold
 TitleLabel.TextSize = 12
@@ -591,6 +591,7 @@ local PlayerRolesCache: { [string]: string } = {}
 local PlayerAliveCache: { [string]: boolean } = {}
 local EndVoting: (reason: string?) -> () = function(_: string?) end
 local UpdateLocalPlayerDisplay: () -> () = function() end
+local ForceCheckMap: () -> () = function() end
 
 local function RegisterRemoteHook(name: string, callback: (...any) -> ())
     local re = FindRemoteEvent(name)
@@ -613,6 +614,7 @@ RegisterRemoteHook("RoleSelect", function(...)
     LblRoundStatus.Text = "Раунд: Выдача ролей (" .. tostring(role) .. ")"
     LblRoundStatus.TextColor3 = Color3.fromRGB(100, 220, 255)
     EndVoting("Выдача ролей (RoleSelect)")
+    ForceCheckMap()
     if role then
         PlayerRolesCache[LocalPlayer.Name] = tostring(role)
         UpdateLocalPlayerDisplay()
@@ -627,6 +629,7 @@ RegisterRemoteHook("RoundStart", function(...)
     LblRoundStatus.Text = "Раунд: ИДЁТ (" .. tostring(duration) .. "с)"
     LblRoundStatus.TextColor3 = Color3.fromRGB(100, 255, 120)
     EndVoting("Старт раунда (RoundStart)")
+    ForceCheckMap()
 
     if typeof(playersData) == "table" then
         for pName, pInfo in pairs(playersData) do
@@ -839,7 +842,20 @@ local function IsMapCandidate(child: Instance): boolean
     return true
 end
 
+local candidateConnections: { [Instance]: { RBXScriptConnection } } = {}
+
+local function DisconnectCandidate(child: Instance)
+    local conns = candidateConnections[child]
+    if conns then
+        for _, c in ipairs(conns) do
+            if c and c.Connected then pcall(function() c:Disconnect() end) end
+        end
+        candidateConnections[child] = nil
+    end
+end
+
 local function CleanupMap(child: Instance)
+    DisconnectCandidate(child)
     if CurrentMapInstance == child then
         local lifetime = (mapSpawnTick > 0) and string.format("(жила %.1fc)", tick() - mapSpawnTick) or ""
         Log(string.format("🧹 [КАРТА] ОЧИСТКА КАРТЫ: '%s' удалена из Workspace %s", child.Name, lifetime), "MAP")
@@ -911,13 +927,43 @@ local function InspectMapCandidate(child: Instance)
     local spawns = child:FindFirstChild("Spawns")
 
     if container or spawns then
+        DisconnectCandidate(child)
         RegisterMap(child, spawns, container)
-    else
-        -- Детали карты (Spawns, CoinContainer) могут реплицироваться чуть позже события ChildAdded
+        return
+    end
+
+    -- Если папки Spawns/CoinContainer ещё реплицируются по сети:
+    -- Подключаем мгновенный слушатель ChildAdded на модель-кандидат (без жесткого ограничения по времени)
+    if not candidateConnections[child] then
+        candidateConnections[child] = {}
+
+        local addConn = child.ChildAdded:Connect(function(newChild)
+            if newChild.Name == "Spawns" or newChild.Name == "CoinContainer" then
+                DisconnectCandidate(child)
+                if not isTerminated and child.Parent == Workspace and CurrentMapInstance ~= child then
+                    local s = (newChild.Name == "Spawns") and newChild or child:FindFirstChild("Spawns")
+                    local c = (newChild.Name == "CoinContainer") and newChild or child:FindFirstChild("CoinContainer")
+                    RegisterMap(child, s, c)
+                end
+            end
+        end)
+        table.insert(candidateConnections[child], addConn)
+        table.insert(activeConnections, addConn)
+
+        local ancConn = child.AncestryChanged:Connect(function(_, parent)
+            if not parent or parent ~= Workspace then
+                DisconnectCandidate(child)
+            end
+        end)
+        table.insert(candidateConnections[child], ancConn)
+        table.insert(activeConnections, ancConn)
+
+        -- Фоновое ожидание с увеличенным до 15 сек таймаутом на случай задержки сетевых пакетов
         task.spawn(function()
-            local foundSpawns = child:WaitForChild("Spawns", 3)
+            local foundSpawns = child:WaitForChild("Spawns", 15)
             local foundContainer = child:FindFirstChild("CoinContainer")
             if not isTerminated and child.Parent == Workspace and (foundSpawns or foundContainer) then
+                DisconnectCandidate(child)
                 if CurrentMapInstance ~= child then
                     RegisterMap(child, foundSpawns, foundContainer)
                 end
@@ -925,6 +971,23 @@ local function InspectMapCandidate(child: Instance)
         end)
     end
 end
+
+local function DoForceCheckMap()
+    if CurrentMapInstance and CurrentMapInstance.Parent == Workspace then return end
+    for _, ch in ipairs(Workspace:GetChildren()) do
+        if IsMapCandidate(ch) and CurrentMapInstance ~= ch then
+            InspectMapCandidate(ch)
+            if CurrentMapInstance then break end
+            -- Резерв: если раунд начат, а Spawns/CoinContainer ещё задерживаются,
+            -- любая модель-кандидат с деталями гарантированно является активной картой
+            if not CurrentMapInstance and ch:IsA("Model") and #ch:GetChildren() > 5 then
+                RegisterMap(ch, ch:FindFirstChild("Spawns"), ch:FindFirstChild("CoinContainer"))
+                break
+            end
+        end
+    end
+end
+ForceCheckMap = DoForceCheckMap
 
 -- Моментальная O(1) проверка карты: не сканируем Workspace:GetChildren() каждые 0.5с
 local function GetWorkspaceMap(): Instance?
