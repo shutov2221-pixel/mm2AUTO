@@ -43,6 +43,7 @@ local initialSavedTwin = LoadTwinName()
 local SETTINGS = {
     AutoFarmEnabled = false,
     AutoVoteEnabled = false,
+    VoteSpamEnabled = false, -- Спам голосования до 11 раз через сброс (по умолчанию выключен)
     Speed = 22,
     FpsCap = 20,
     PotatoMode = false,
@@ -1448,6 +1449,20 @@ SaveTwinBtn.Active = true
 SaveTwinBtn.ZIndex = 10
 Instance.new("UICorner", SaveTwinBtn).CornerRadius = UDim.new(0, 6)
 
+-- Кнопка спама голосования (до 11 раз через сброс, появляется при включении автоголосования)
+local VoteSpamBtn = Instance.new("TextButton", SettingsContainer)
+VoteSpamBtn.Name = "VoteSpamBtn"
+VoteSpamBtn.Size = UDim2.new(1, 0, 0, 35)
+VoteSpamBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
+VoteSpamBtn.Text = "СПАМ ГОЛОСА: OFF"
+VoteSpamBtn.TextColor3 = Color3.new(1, 1, 1)
+VoteSpamBtn.Font = Enum.Font.GothamSemibold
+VoteSpamBtn.TextSize = 13
+VoteSpamBtn.Active = true
+VoteSpamBtn.ZIndex = 10
+VoteSpamBtn.Visible = false
+Instance.new("UICorner", VoteSpamBtn).CornerRadius = UDim.new(0, 6)
+
 -- Подвал: строка состояния
 local StatusFrame = Instance.new("Frame", MainFrame)
 StatusFrame.Size = UDim2.new(1, 0, 0, 25)
@@ -1475,11 +1490,14 @@ end
 local function UpdateGuiSizes()
     local isStats = StatsPanel.Visible
     local isTwin = (SETTINGS.GameMode == "Twin")
+    local isVote = (SETTINGS.AutoVoteEnabled == true)
 
     TwinContainer.Visible = isTwin
+    VoteSpamBtn.Visible = isVote
 
     local settingsY = isStats and 155 or 85
-    local settingsH = isTwin and 245 or 205
+    local extraH = (isTwin and 40 or 0) + (isVote and 40 or 0)
+    local settingsH = 205 + extraH
 
     SettingsContainer.Position = UDim2.new(0, 8, 0, settingsY)
     SettingsContainer.Size = UDim2.new(1, -16, 0, settingsH)
@@ -1489,6 +1507,18 @@ local function UpdateGuiSizes()
 end
 
 UpdateGuiSizes()
+
+-- Переключение спама голоса
+BindClick(VoteSpamBtn, function()
+    SETTINGS.VoteSpamEnabled = not SETTINGS.VoteSpamEnabled
+    VoteSpamBtn.Text = "СПАМ ГОЛОСА: " .. (SETTINGS.VoteSpamEnabled and "ON" or "OFF")
+    VoteSpamBtn.BackgroundColor3 = SETTINGS.VoteSpamEnabled and Color3.fromRGB(50, 200, 50) or Color3.fromRGB(60, 60, 70)
+    if SETTINGS.VoteSpamEnabled then
+        UpdateStatus("Спам голоса: ВКЛ (до 11 раз через сброс)", Color3.fromRGB(100, 255, 100))
+    else
+        UpdateStatus("Спам голоса: ВЫКЛ (1 голос без сброса)", Color3.fromRGB(200, 200, 200))
+    end
+end)
 
 -- Сохранение ника твинка
 BindClick(SaveTwinBtn, function()
@@ -1591,6 +1621,7 @@ BindClick(BtnVote, function()
     else
         UpdateStatus("Авто-голосование выключено", Color3.fromRGB(200, 100, 100))
     end
+    UpdateGuiSizes()
 end)
 
 -- Обновление статистики раз в секунду
@@ -1981,33 +2012,6 @@ local function GetMapPriority(mapName)
     return 999
 end
 
--- Получение реального количества голосов с информационного стенда MM2
-local function GetServerVotes(mapName: string): number
-    local lobby = Workspace:FindFirstChild("Lobby")
-    local votePadsFolder = lobby and lobby:FindFirstChild("VotePads")
-    if not votePadsFolder then return 0 end
-    for _, pad in ipairs(votePadsFolder:GetChildren()) do
-        local gui = pad:FindFirstChild("VoteInfoGui", true)
-        if gui then
-            local isTarget = false
-            local votes = 0
-            for _, txt in ipairs(gui:GetDescendants()) do
-                if txt:IsA("TextLabel") and txt.Visible then
-                    local clean = string.gsub(txt.Text, "^%s*(.-)%s*$", "%1")
-                    if string.lower(clean) == string.lower(mapName) then
-                        isTarget = true
-                    elseif string.find(string.lower(clean), "votes") then
-                        local n = tonumber(string.match(clean, "%d+"))
-                        if n then votes = n end
-                    end
-                end
-            end
-            if isTarget then return votes end
-        end
-    end
-    return 0
-end
-
 local function ScanVotePads()
     local currentMaps = {}
     local lobby = Workspace:FindFirstChild("Lobby")
@@ -2059,12 +2063,8 @@ local function ScanVotePads()
                     table.insert(allNames, mapName)
                     local tpPart = pad:IsA("BasePart") and pad or (pad:IsA("Model") and (pad.PrimaryPart or pad:FindFirstChildWhichIsA("BasePart"))) or pad:FindFirstChildWhichIsA("BasePart")
                     if tpPart then
-                        -- Горизонтальная позиция под полом (лежа плашмя):
-                        -- Наклон 90 градусов: толщина по вертикали Y составляет всего ~1 студ (толщина торса).
-                        -- Смещение -1.2 студа укладывает тело точно под пол лобби, оставаясь внутри хитбокса Pad (Y=464.3).
-                        local underCFrame = tpPart.CFrame * CFrame.new(0, -1.2, 0) * CFrame.Angles(math.rad(90), 0, 0)
-                        local surfCFrame = tpPart.CFrame * CFrame.new(0, 0.8, 0) * CFrame.Angles(math.rad(90), 0, 0)
-                        currentMaps[mapName] = { under = underCFrame, surface = surfCFrame }
+                        -- Идеальная высота (1.0 студ над центром Pad, Y = 466.5)
+                        currentMaps[mapName] = tpPart.CFrame + Vector3.new(0, 1.0, 0)
                     end
                 end
             end
@@ -2100,9 +2100,9 @@ task.spawn(function()
     end
 end)
 
--- Основной цикл авто-голосования (мульти-накрутка до 11 голосов через ресет)
+-- Основной цикл авто-голосования
 task.spawn(function()
-    while not IsTerminated and task.wait(1) do
+    while not IsTerminated and task.wait(0.5) do
         if not SETTINGS.AutoVoteEnabled then continue end
         if rt:CheckIfGameInProgress() then 
             continue 
@@ -2122,114 +2122,86 @@ task.spawn(function()
         for name, _ in pairs(availableMaps) do table.insert(mapNames, name) end
         if #mapNames < 2 then continue end
 
-        local bestMap, bestPriority, bestData = nil, 999, nil
-        for name, data in pairs(availableMaps) do
+        local bestMap, bestPriority, bestCFrame = nil, 999, nil
+        for name, tpCFrame in pairs(availableMaps) do
             local priority = GetMapPriority(name)
             if priority < bestPriority then
                 bestPriority = priority
                 bestMap = name
-                bestData = data
+                bestCFrame = tpCFrame
             end
         end
 
-        if bestMap and bestPriority < 999 and bestData then
-            UpdateStatus("Голос: Старт накрутки (" .. bestMap .. ")", Color3.fromRGB(50, 255, 255))
+        if bestMap and bestPriority < 999 and bestCFrame then
+            local maxVotes = SETTINGS.VoteSpamEnabled and 11 or 1
+            UpdateStatus(string.format("Голос: Старт (%s, %s)", bestMap, SETTINGS.VoteSpamEnabled and "спам до 11" or "1 голос"), Color3.fromRGB(50, 255, 255))
 
             local voteCount = 0
-            local MAX_VOTES = 11
-            local initialServerVotes = GetServerVotes(bestMap)
-            local targetCFrame = bestData.under -- Сначала пробуем горизонтально под полом
             isVotingNoclip = true
 
-            while voteCount < MAX_VOTES and not IsTerminated and SETTINGS.AutoVoteEnabled do
+            local currentChar = LocalPlayer.Character
+            local currentHrp = currentChar and (currentChar:FindFirstChild("HumanoidRootPart") or currentChar.PrimaryPart) :: BasePart?
+            local currentHum = currentChar and currentChar:FindFirstChildOfClass("Humanoid")
+
+            while voteCount < maxVotes and not IsTerminated and SETTINGS.AutoVoteEnabled do
                 if rt:CheckIfGameInProgress() then break end
 
-                -- Перепроверяем, активно ли голосование
-                local currentMaps = ScanVotePads()
-                if not currentMaps[bestMap] then
-                    break
+                -- Если персонаж еще не появился или мертв — ждем один раз
+                if not currentChar or not currentHrp or not currentHum or currentHum.Health <= 0 then
+                    currentChar = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+                    currentHrp = (currentChar:WaitForChild("HumanoidRootPart", 5) or currentChar.PrimaryPart) :: BasePart?
+                    currentHum = currentChar:WaitForChild("Humanoid", 5) :: Humanoid?
                 end
 
-                local char = LocalPlayer.Character
-                local hrp = char and (char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart) :: BasePart?
-                local hum = char and char:FindFirstChildOfClass("Humanoid")
+                if not currentHrp or not currentHum then break end
 
-                if not char or not hrp or not hum or hum.Health <= 0 then
-                    local newChar = LocalPlayer.CharacterAdded:Wait()
-                    hrp = (newChar:WaitForChild("HumanoidRootPart", 2) or newChar.PrimaryPart) :: BasePart?
-                    hum = newChar:WaitForChild("Humanoid", 2) :: Humanoid?
-                    char = newChar
-                end
-
-                if not hrp or not hum or hum.Health <= 0 then
-                    task.wait(0.02)
-                    continue
-                end
-
-                -- Отключаем коллизию, чтобы персонаж не выталкивался сквозь текстуры
+                -- Мгновенно отключаем коллизию нового тела
                 updateBodyPartsCache()
                 for _, part in ipairs(rt.cachedBodyParts) do
                     if part and part.Parent then part.CanCollide = false end
                 end
 
-                -- Зависаем в воздухе лежа плашмя (BodyVelocity + BodyGyro)
-                -- Персонаж остается Unanchored, поэтому Roblox полностью передает координаты серверу!
-                local holdV = hrp:FindFirstChild("VoteHover") or Instance.new("BodyVelocity")
+                -- Зависаем в воздухе без падения (BodyVelocity вместо Anchored)
+                local holdV = Instance.new("BodyVelocity")
                 holdV.Name = "VoteHover"
                 holdV.Velocity = Vector3.zero
-                holdV.MaxForce = Vector3.new(9e9, 9e9, 9e9)
-                holdV.Parent = hrp
+                holdV.MaxForce = Vector3.new(0, 9e9, 0)
+                holdV.Parent = currentHrp
 
-                local holdG = hrp:FindFirstChild("VoteGyro") or Instance.new("BodyGyro")
-                holdG.Name = "VoteGyro"
-                holdG.CFrame = targetCFrame
-                holdG.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
-                holdG.Parent = hrp
-
-                hrp.AssemblyLinearVelocity = Vector3.zero
-                hrp.AssemblyAngularVelocity = Vector3.zero
-                char:PivotTo(targetCFrame)
+                currentHrp.AssemblyLinearVelocity = Vector3.zero
+                currentHrp.AssemblyAngularVelocity = Vector3.zero
+                currentChar:PivotTo(bestCFrame)
 
                 voteCount = voteCount + 1
-                local sVotes = GetServerVotes(bestMap)
-                UpdateStatus(string.format("Голос: [%s] (%d/%d) [Стенд: %d]", bestMap, voteCount, MAX_VOTES, sVotes), Color3.fromRGB(50, 255, 255))
+                UpdateStatus(string.format("Голос: [%s] (%d/%d)", bestMap, voteCount, maxVotes), Color3.fromRGB(50, 255, 255))
 
-                -- Пауза для подтверждения координат сервером MM2
-                task.wait(0.18)
+                -- Пауза для фиксации пакета координат сервером MM2
+                task.wait(0.15)
 
                 if holdV and holdV.Parent then holdV:Destroy() end
-                if holdG and holdG.Parent then holdG:Destroy() end
 
-                -- Авто-адаптация: если за 2 попытки серверный счетчик на стенде не вырос,
-                -- значит сервер требует торс над полом -> поднимаемся на уровень пола плашмя
-                local newSVotes = GetServerVotes(bestMap)
-                if voteCount >= 2 and newSVotes == initialServerVotes and targetCFrame == bestData.under then
-                    targetCFrame = bestData.surface
-                    UpdateStatus("Голос: Коррекция высоты на поверхность", Color3.fromRGB(255, 200, 50))
-                end
-
-                if rt:CheckIfGameInProgress() or not SETTINGS.AutoVoteEnabled then
+                -- Если спам выключен или лимит достигнут — выходим сразу БЕЗ сброса
+                if not SETTINGS.VoteSpamEnabled or voteCount >= maxVotes or rt:CheckIfGameInProgress() or not SETTINGS.AutoVoteEnabled then
                     break
                 end
 
-                -- Сброс персонажа для обхода серверного лимита (1 персонаж = 1 голос)
-                if voteCount < MAX_VOTES then
-                    pcall(function()
-                        hum.Health = 0
-                        char:BreakJoints()
-                    end)
-                    -- Ожидаем респавна нового персонажа напрямую без задержек
-                    local newChar = LocalPlayer.CharacterAdded:Wait()
-                    char = newChar
-                    hrp = (newChar:WaitForChild("HumanoidRootPart", 2) or newChar.PrimaryPart) :: BasePart?
-                    hum = newChar:WaitForChild("Humanoid", 2) :: Humanoid?
-                    updateBodyPartsCache()
-                end
+                -- Сброс персонажа для получения следующего голоса
+                pcall(function()
+                    currentHum.Health = 0
+                    currentChar:BreakJoints()
+                end)
+
+                -- Ждем нового персонажа строго ОДИН раз
+                currentChar = LocalPlayer.CharacterAdded:Wait()
+                currentHrp = (currentChar:WaitForChild("HumanoidRootPart", 5) or currentChar.PrimaryPart) :: BasePart?
+                currentHum = currentChar:WaitForChild("Humanoid", 5) :: Humanoid?
+                -- В следующей итерации currentChar и currentHrp УЖЕ готовы,
+                -- поэтому телепорт произойдет мгновенно в 0-й миллисекунде появления!
             end
 
             isVotingNoclip = false
             HasVoted = true
-            UpdateStatus(string.format("Голос: Завершено (%d голосов за %s)", voteCount, bestMap), Color3.fromRGB(100, 255, 100))
+            UpdateStatus(string.format("Голос: Завершено (%d за %s)", voteCount, bestMap), Color3.fromRGB(100, 255, 100))
         end
     end
 end)
