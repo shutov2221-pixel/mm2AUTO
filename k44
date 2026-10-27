@@ -863,6 +863,42 @@ local function StopSniffer()
     UpdateStatus("Remote Sniffer остановлен", Color3.fromRGB(200, 200, 200))
 end
 
+local isNamecallHooked = false
+local oldNamecall = nil
+
+local function SetupOutgoingHook()
+    if isNamecallHooked then return end
+    local hmm = hookmetamethod or (syn and syn.hookmetamethod)
+    local gnm = getnamecallmethod or (syn and syn.getnamecallmethod)
+    if typeof(hmm) == "function" and typeof(gnm) == "function" then
+        local ok, err = pcall(function()
+            oldNamecall = hmm(game, "__namecall", function(self, ...)
+                if snifferActive and typeof(self) == "Instance" then
+                    local method = gnm()
+                    if method == "FireServer" and self:IsA("RemoteEvent") then
+                        local okName, path = pcall(function() return self:GetFullName() end)
+                        local name = okName and path or self.Name
+                        Log(string.format("📤 [FIRE_SERVER] %s >> %s", name, SerializeArgs(...)), "FLASH")
+                    elseif method == "InvokeServer" and self:IsA("RemoteFunction") then
+                        local okName, path = pcall(function() return self:GetFullName() end)
+                        local name = okName and path or self.Name
+                        Log(string.format("📤 [INVOKE_SERVER] %s >> %s", name, SerializeArgs(...)), "FLASH")
+                    end
+                end
+                return oldNamecall(self, ...)
+            end)
+        end)
+        if ok then
+            isNamecallHooked = true
+            Log("✅ [HOOK] Перехват исходящих вызовов (FireServer) активен!", "SUCCESS")
+        else
+            Log("⚠️ [HOOK] Не удалось установить hookmetamethod: " .. tostring(err), "WARN")
+        end
+    else
+        Log("ℹ️ [HOOK] hookmetamethod недоступен в этом эксплойте, слушаем входящие события", "INFO")
+    end
+end
+
 local function HookRemote(remote)
     if snifferHooked[remote] then return end
     snifferHooked[remote] = true
@@ -877,10 +913,21 @@ local function HookRemote(remote)
         table.insert(snifferConns, conn)
 
     elseif remote:IsA("RemoteFunction") then
-        -- RemoteFunction: можно только залогировать факт существования
-        -- (OnClientInvoke без замены оригинального обработчика не перехватывается)
         local ok, path = pcall(function() return remote:GetFullName() end)
         Log(string.format("[RF] %s (существует, пассивно)", ok and path or remote.Name), "REMOTE")
+    end
+end
+
+local function HookKnifeRemotes(knife: Instance)
+    if not knife or not knife:IsA("Tool") then return end
+    local eventsFolder = knife:FindFirstChild("Events")
+    if eventsFolder then
+        for _, rem in ipairs(eventsFolder:GetChildren()) do
+            if rem:IsA("RemoteEvent") or rem:IsA("RemoteFunction") then
+                HookRemote(rem)
+                Log(string.format("  🗡 [KNIFE RE] Подключен: %s (%s)", rem.Name, rem.ClassName), "SUCCESS")
+            end
+        end
     end
 end
 
@@ -893,25 +940,60 @@ local function StartSniffer()
     snifferActive = true
     BtnRemoteSniffer.Text = "🟢 SNIFFER: ON"
     BtnRemoteSniffer.BackgroundColor3 = Color3.fromRGB(40, 160, 60)
-    Log("=== REMOTE SNIFFER ЗАПУЩЕН ===", "REMOTE")
-    Log("Перехватываем ВСЕ RemoteEvent в ReplicatedStorage...", "REMOTE")
+    Log("=== REMOTE SNIFFER ЗАПУЩЕН (REPLICATED + KNIFE.EVENTS) ===", "REMOTE")
 
-    -- Хукаем все существующие ремоуты
+    -- 1. Устанавливаем перехватчик исходящих FireServer
+    SetupOutgoingHook()
+
+    -- 2. Хукаем все ремоуты в ReplicatedStorage
+    Log("Перехватываем RemoteEvent в ReplicatedStorage...", "REMOTE")
     local reCount, rfCount = 0, 0
     for _, v in ipairs(ReplicatedStorage:GetDescendants()) do
         if v:IsA("RemoteEvent") then
             HookRemote(v)
             reCount = reCount + 1
-            Log("  [RE] " .. v:GetFullName(), "REMOTE")
         elseif v:IsA("RemoteFunction") then
             HookRemote(v)
             rfCount = rfCount + 1
         end
     end
-    Log(string.format("Подключено: %d RemoteEvent, %d RemoteFunction", reCount, rfCount), "REMOTE")
-    Log("Ожидаем события... (убей кого-нибудь или получи таргет)", "WARN")
+    Log(string.format("Подключено: %d RemoteEvent, %d RemoteFunction в ReplicatedStorage", reCount, rfCount), "REMOTE")
 
-    -- Хукаем новые ремоуты при появлении
+    -- 3. Хукаем ремоуты ножа (Knife.Events) в Character и Backpack
+    local char = LocalPlayer.Character
+    if char then
+        for _, item in ipairs(char:GetChildren()) do
+            HookKnifeRemotes(item)
+        end
+        local charChildConn = char.ChildAdded:Connect(function(child)
+            if snifferActive then HookKnifeRemotes(child) end
+        end)
+        table.insert(snifferConns, charChildConn)
+    end
+
+    local backpack = LocalPlayer:FindFirstChildOfClass("Backpack") or LocalPlayer:FindFirstChild("Backpack")
+    if backpack then
+        for _, item in ipairs(backpack:GetChildren()) do
+            HookKnifeRemotes(item)
+        end
+        local bpChildConn = backpack.ChildAdded:Connect(function(child)
+            if snifferActive then HookKnifeRemotes(child) end
+        end)
+        table.insert(snifferConns, bpChildConn)
+    end
+
+    local charAddedConn = LocalPlayer.CharacterAdded:Connect(function(newChar)
+        if not snifferActive then return end
+        task.wait(0.1)
+        for _, item in ipairs(newChar:GetChildren()) do HookKnifeRemotes(item) end
+        local cConn = newChar.ChildAdded:Connect(function(child)
+            if snifferActive then HookKnifeRemotes(child) end
+        end)
+        table.insert(snifferConns, cConn)
+    end)
+    table.insert(snifferConns, charAddedConn)
+
+    -- 4. Хукаем новые ремоуты в ReplicatedStorage при появлении
     local addConn = ReplicatedStorage.DescendantAdded:Connect(function(v)
         if not snifferActive then return end
         if v:IsA("RemoteEvent") or v:IsA("RemoteFunction") then
@@ -921,7 +1003,8 @@ local function StartSniffer()
     end)
     table.insert(snifferConns, addConn)
 
-    UpdateStatus("Remote Sniffer активен — жди убийства!", Color3.fromRGB(255, 140, 50))
+    Log("🎯 Сниффер слушает входящие события И исходящие вызовы удара ножа!", "SUCCESS")
+    UpdateStatus("Сниффер ножа и сети активен", Color3.fromRGB(255, 140, 50))
 end
 
 -- Кнопка «COPY/SAVE LOG»: сохраняет все строки в файл + копирует в буфер
