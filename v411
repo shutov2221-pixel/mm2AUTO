@@ -1,23 +1,39 @@
 --!strict
 -- =====================================================================
--- MM2 ASSASSIN ULTRA-FAST KILLER [HYBRID TURBO v5.0]
--- 1. СЕТЕВОЙ ПЕРЕХВАТ (0 мс задержки): Прямой слушатель RemoteEvent [ChangeTarget]
---    из ReplicatedStorage мгновенно получает системный ник и UserId цели ДО отрисовки в GUI!
--- 2. МГНОВЕННЫЙ УДАР: Double-Pulse touchinterest по цели сразу при получении пакета.
--- 3. АВТО-ДОБИВАНИЕ (Watchdog 0.05с): Если цель не погибла сразу, бьет каждые 0.05с.
--- 4. РЕЗЕРВНЫЙ UI-СЛОЙ: Если скрипт запущен в середине раунда, цель берется из UI.
--- 5. МГНОВЕННАЯ ПОБЕДА: Отслеживание скрытия AssassinTarget + пакет RoundEndFade.
+-- MM2 STATE & ROUND DIAGNOSTIC MONITOR [v1.0]
+-- Специализированный диагностический логгер состояний раунда MM2:
+-- 1. СЕТЕВЫЕ СОБЫТИЯ (RemoteEvents):
+--    • RoleSelect (выбор/выдача ролей, определение старта)
+--    • RoundStart (официальный старт раунда и длительность)
+--    • RoundEndFade (завершение раунда сервером)
+--    • ChangeTarget (система целей в Assassin)
+--    • GiveWeapon (выдача ножа/пистолета сервером)
+--    • PlayerDataChanged (синхронизация состояния: монеты других игроков, живые/мертвые, роли)
+--    • KillEvent / SpecialXPEvent (убийства и события)
+-- 2. КАРТА И МОНЕТЫ (Workspace & Physics):
+--    • Спавн карты (Workspace.ChildAdded с поиском CoinContainer / Spawns)
+--    • Удаление карты (Workspace.ChildRemoved)
+--    • Спавн CoinContainer и первой монеты (засечка времени от спавна карты)
+--    • Динамика монет (счетчик активных монет в контейнере)
+-- 3. ГОЛОСОВАНИЕ (Lobby VotePads):
+--    • Начало голосования (появление вариантов на VotePads)
+--    • Конец голосования / Выбор карты (очистка падов или исчезновение GUI)
+-- 4. СОСТОЯНИЕ LOCALPLAYER & ATTRIBUTES:
+--    • Атрибут "Alive", "Elite", изменение HP Humanoid, смена Character
+-- 5. ЭКСПОРТ ЛОГОВ:
+--    • Запись в файл mm2_round_diagnostic.txt через writefile
+--    • Копирование логов в буфер обмена (setclipboard)
 -- =====================================================================
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
+local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 while not Players.LocalPlayer do task.wait(0.1) end
 local LocalPlayer = Players.LocalPlayer
 
-local isRunning = false
 local isTerminated = false
 local activeConnections: { RBXScriptConnection } = {}
 
@@ -32,24 +48,25 @@ local function GetSafeGuiParent(): Instance
     return LocalPlayer:WaitForChild("PlayerGui")
 end
 
-local oldGui = GetSafeGuiParent():FindFirstChild("MM2_KillAll_Debug_Gui")
-if oldGui then oldGui:Destroy() end
+local safeParent = GetSafeGuiParent()
+local oldGui = safeParent:FindFirstChild("MM2_RoundMonitor_Gui")
+if oldGui then pcall(function() oldGui:Destroy() end) end
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "MM2_KillAll_Debug_Gui"
+ScreenGui.Name = "MM2_RoundMonitor_Gui"
 ScreenGui.ResetOnSpawn = false
-ScreenGui.Parent = GetSafeGuiParent()
+ScreenGui.Parent = safeParent
 
-local WINDOW_WIDTH = 370
-local EXPANDED_HEIGHT = 405
-local COLLAPSED_HEIGHT = 242
+local WINDOW_WIDTH = 420
+local EXPANDED_HEIGHT = 440
+local COLLAPSED_HEIGHT = 160
 local isLogsCollapsed = false
 
 local MainFrame = Instance.new("Frame")
 MainFrame.Name = "MainFrame"
 MainFrame.Size = UDim2.new(0, WINDOW_WIDTH, 0, EXPANDED_HEIGHT)
-MainFrame.Position = UDim2.new(0.05, 0, 0.25, 0)
-MainFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
+MainFrame.Position = UDim2.new(0.04, 0, 0.15, 0)
+MainFrame.BackgroundColor3 = Color3.fromRGB(16, 17, 24)
 MainFrame.BorderSizePixel = 0
 MainFrame.Active = true
 MainFrame.ClipsDescendants = true
@@ -57,13 +74,14 @@ MainFrame.Parent = ScreenGui
 Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
 
 local MainStroke = Instance.new("UIStroke", MainFrame)
-MainStroke.Color = Color3.fromRGB(60, 60, 80)
+MainStroke.Color = Color3.fromRGB(50, 60, 85)
 MainStroke.Thickness = 1.2
 
+-- Заголовок
 local TitleBar = Instance.new("Frame")
 TitleBar.Name = "TitleBar"
 TitleBar.Size = UDim2.new(1, 0, 0, 32)
-TitleBar.BackgroundColor3 = Color3.fromRGB(28, 28, 38)
+TitleBar.BackgroundColor3 = Color3.fromRGB(24, 26, 38)
 TitleBar.BorderSizePixel = 0
 TitleBar.Parent = MainFrame
 Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 10)
@@ -72,8 +90,8 @@ local TitleLabel = Instance.new("TextLabel")
 TitleLabel.Size = UDim2.new(1, -70, 1, 0)
 TitleLabel.Position = UDim2.new(0, 10, 0, 0)
 TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "⚡ MM2 ASSASSIN TURBO v5.0 [NETWORK]"
-TitleLabel.TextColor3 = Color3.fromRGB(255, 215, 80)
+TitleLabel.Text = "🛰 MM2 ROUND & STATE MONITOR v1.0"
+TitleLabel.TextColor3 = Color3.fromRGB(110, 210, 255)
 TitleLabel.Font = Enum.Font.GothamBold
 TitleLabel.TextSize = 12
 TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
@@ -101,7 +119,7 @@ CloseBtn.TextSize = 11
 CloseBtn.Parent = TitleBar
 Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 5)
 
--- Перетаскивание
+-- Перетаскивание окна
 local dragging, dragStart, startPos
 TitleBar.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
@@ -121,10 +139,78 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
--- Контейнер кнопок
+-- Информационная панель текущего состояния
+local StateInfoFrame = Instance.new("Frame")
+StateInfoFrame.Size = UDim2.new(1, -16, 0, 58)
+StateInfoFrame.Position = UDim2.new(0, 8, 0, 36)
+StateInfoFrame.BackgroundColor3 = Color3.fromRGB(22, 24, 34)
+StateInfoFrame.BorderSizePixel = 0
+StateInfoFrame.Parent = MainFrame
+Instance.new("UICorner", StateInfoFrame).CornerRadius = UDim.new(0, 6)
+
+local StateInfoStroke = Instance.new("UIStroke", StateInfoFrame)
+StateInfoStroke.Color = Color3.fromRGB(40, 45, 65)
+StateInfoStroke.Thickness = 1
+
+local LblCurrentMap = Instance.new("TextLabel")
+LblCurrentMap.Size = UDim2.new(0.5, -6, 0, 16)
+LblCurrentMap.Position = UDim2.new(0, 8, 0, 6)
+LblCurrentMap.BackgroundTransparency = 1
+LblCurrentMap.Text = "Карта: (нет)"
+LblCurrentMap.TextColor3 = Color3.fromRGB(200, 220, 255)
+LblCurrentMap.Font = Enum.Font.GothamSemibold
+LblCurrentMap.TextSize = 11
+LblCurrentMap.TextXAlignment = Enum.TextXAlignment.Left
+LblCurrentMap.Parent = StateInfoFrame
+
+local LblRoundStatus = Instance.new("TextLabel")
+LblRoundStatus.Size = UDim2.new(0.5, -6, 0, 16)
+LblRoundStatus.Position = UDim2.new(0.5, 2, 0, 6)
+LblRoundStatus.BackgroundTransparency = 1
+LblRoundStatus.Text = "Раунд: Ожидание"
+LblRoundStatus.TextColor3 = Color3.fromRGB(255, 200, 80)
+LblRoundStatus.Font = Enum.Font.GothamSemibold
+LblRoundStatus.TextSize = 11
+LblRoundStatus.TextXAlignment = Enum.TextXAlignment.Left
+LblRoundStatus.Parent = StateInfoFrame
+
+local LblCoinsInfo = Instance.new("TextLabel")
+LblCoinsInfo.Size = UDim2.new(0.5, -6, 0, 16)
+LblCoinsInfo.Position = UDim2.new(0, 8, 0, 24)
+LblCoinsInfo.BackgroundTransparency = 1
+LblCoinsInfo.Text = "Монеты: 0 на карте"
+LblCoinsInfo.TextColor3 = Color3.fromRGB(255, 215, 80)
+LblCoinsInfo.Font = Enum.Font.GothamSemibold
+LblCoinsInfo.TextSize = 11
+LblCoinsInfo.TextXAlignment = Enum.TextXAlignment.Left
+LblCoinsInfo.Parent = StateInfoFrame
+
+local LblVoteStatus = Instance.new("TextLabel")
+LblVoteStatus.Size = UDim2.new(0.5, -6, 0, 16)
+LblVoteStatus.Position = UDim2.new(0.5, 2, 0, 24)
+LblVoteStatus.BackgroundTransparency = 1
+LblVoteStatus.Text = "Голосование: Не активно"
+LblVoteStatus.TextColor3 = Color3.fromRGB(150, 180, 210)
+LblVoteStatus.Font = Enum.Font.GothamSemibold
+LblVoteStatus.TextSize = 11
+LblVoteStatus.TextXAlignment = Enum.TextXAlignment.Left
+LblVoteStatus.Parent = StateInfoFrame
+
+local LblLocalPlayerStatus = Instance.new("TextLabel")
+LblLocalPlayerStatus.Size = UDim2.new(1, -12, 0, 14)
+LblLocalPlayerStatus.Position = UDim2.new(0, 8, 0, 40)
+LblLocalPlayerStatus.BackgroundTransparency = 1
+LblLocalPlayerStatus.Text = "Игрок: Alive=false | HP: 100 | Роль: None"
+LblLocalPlayerStatus.TextColor3 = Color3.fromRGB(160, 240, 160)
+LblLocalPlayerStatus.Font = Enum.Font.Gotham
+LblLocalPlayerStatus.TextSize = 10
+LblLocalPlayerStatus.TextXAlignment = Enum.TextXAlignment.Left
+LblLocalPlayerStatus.Parent = StateInfoFrame
+
+-- Контейнер кнопок управления
 local ControlsFrame = Instance.new("Frame")
-ControlsFrame.Size = UDim2.new(1, -16, 0, 144)
-ControlsFrame.Position = UDim2.new(0, 8, 0, 36)
+ControlsFrame.Size = UDim2.new(1, -16, 0, 28)
+ControlsFrame.Position = UDim2.new(0, 8, 0, 98)
 ControlsFrame.BackgroundTransparency = 1
 ControlsFrame.Parent = MainFrame
 
@@ -138,89 +224,34 @@ local function CreateButton(text: string, color: Color3, pos: UDim2, size: UDim2
     btn.Font = Enum.Font.GothamBold
     btn.TextSize = 10
     btn.Parent = ControlsFrame
-    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 5)
     return btn
 end
 
--- Ряд 1: Скан | Взять нож | Сниффер | Очистить
-local BtnScan = CreateButton("🔍 СКАН", Color3.fromRGB(35, 120, 185), UDim2.new(0, 0, 0, 0), UDim2.new(0.32, -2, 0, 26))
-local BtnEquip = CreateButton("🗡 НОЖ", Color3.fromRGB(180, 110, 30), UDim2.new(0.32, 2, 0, 0), UDim2.new(0.28, -2, 0, 26))
-local BtnInspect = CreateButton("🕵️ СНИФФЕР", Color3.fromRGB(110, 60, 160), UDim2.new(0.60, 2, 0, 0), UDim2.new(0.22, -2, 0, 26))
-local BtnClear = CreateButton("🗑", Color3.fromRGB(60, 60, 70), UDim2.new(0.82, 2, 0, 0), UDim2.new(0.18, -2, 0, 26))
+local BtnExport = CreateButton("💾 ЭКСПОРТ ЛОГА (В ФАЙЛ)", Color3.fromRGB(40, 130, 200), UDim2.new(0, 0, 0, 0), UDim2.new(0.46, -2, 1, 0))
+local BtnCopy = CreateButton("📋 СКОПИРОВАТЬ", Color3.fromRGB(90, 60, 160), UDim2.new(0.46, 2, 0, 0), UDim2.new(0.36, -2, 1, 0))
+local BtnClear = CreateButton("🗑 ОЧИСТИТЬ", Color3.fromRGB(70, 70, 80), UDim2.new(0.82, 2, 0, 0), UDim2.new(0.18, -2, 1, 0))
 
--- Ряд 2: Одиночный выстрел | Турбо-цепочка
-local BtnSingle = CreateButton("🎯 1-SHOT (УДАР)", Color3.fromRGB(220, 110, 20), UDim2.new(0, 0, 0, 29), UDim2.new(0.42, -2, 0, 26))
-local BtnKill = CreateButton("⚡ ТУРБО-ЦЕПОЧКА (AUTO-KILL)", Color3.fromRGB(200, 45, 45), UDim2.new(0.42, 2, 0, 29), UDim2.new(0.58, -2, 0, 26))
-
--- Ряд 3: Remote Sniffer | Copy Log
-local BtnRemoteSniffer = CreateButton("🔴 REMOTE SNIFFER", Color3.fromRGB(140, 40, 160), UDim2.new(0, 0, 0, 58), UDim2.new(0.55, -2, 0, 26))
-local BtnCopyLog = CreateButton("📋 COPY/SAVE LOG", Color3.fromRGB(50, 80, 130), UDim2.new(0.55, 2, 0, 58), UDim2.new(0.45, -2, 0, 26))
-
--- Ряд 4: Поле ввода ника читера + Кнопка слежки
-local SpyInput = Instance.new("TextBox")
-SpyInput.Name = "SpyInput"
-SpyInput.Size = UDim2.new(0.58, -2, 0, 26)
-SpyInput.Position = UDim2.new(0, 0, 0, 87)
-SpyInput.BackgroundColor3 = Color3.fromRGB(26, 26, 36)
-SpyInput.TextColor3 = Color3.fromRGB(255, 255, 255)
-SpyInput.PlaceholderColor3 = Color3.fromRGB(130, 130, 150)
-SpyInput.PlaceholderText = "Ник читера (thunderpro...)"
-SpyInput.Font = Enum.Font.GothamSemibold
-SpyInput.TextSize = 10
-SpyInput.ClearTextOnFocus = false
-SpyInput.Text = ""
-SpyInput.Parent = ControlsFrame
-Instance.new("UICorner", SpyInput).CornerRadius = UDim.new(0, 6)
-
-local SpyStroke = Instance.new("UIStroke", SpyInput)
-SpyStroke.Color = Color3.fromRGB(70, 70, 100)
-SpyStroke.Thickness = 1
-
-local BtnSpyToggle = CreateButton("🕵️ СЛЕЖКА: ВЫКЛ", Color3.fromRGB(150, 45, 120), UDim2.new(0.58, 2, 0, 87), UDim2.new(0.42, -2, 0, 26))
-
--- Ряд 5: Авто-поиск подозрительного читера + Тест RF
-local BtnFindCheater = CreateButton("⚡ НАЙТИ ЧИТЕРА (АВТО)", Color3.fromRGB(180, 80, 20), UDim2.new(0, 0, 0, 116), UDim2.new(0.58, -2, 0, 26))
-local BtnTestRF = CreateButton("🧪 ТЕСТ RF", Color3.fromRGB(75, 50, 95), UDim2.new(0.58, 2, 0, 116), UDim2.new(0.42, -2, 0, 26))
-
-local StatusFrame = Instance.new("Frame")
-StatusFrame.Size = UDim2.new(1, -16, 0, 22)
-StatusFrame.Position = UDim2.new(0, 8, 0, 184)
-StatusFrame.BackgroundColor3 = Color3.fromRGB(26, 26, 34)
-StatusFrame.Parent = MainFrame
-Instance.new("UICorner", StatusFrame).CornerRadius = UDim.new(0, 5)
-
-local StatusLabel = Instance.new("TextLabel")
-StatusLabel.Size = UDim2.new(1, -10, 1, 0)
-StatusLabel.Position = UDim2.new(0, 6, 0, 0)
-StatusLabel.BackgroundTransparency = 1
-StatusLabel.Text = "> Сетевой турбо-режим v5.0 готов"
-StatusLabel.TextColor3 = Color3.fromRGB(180, 220, 255)
-StatusLabel.Font = Enum.Font.GothamSemibold
-StatusLabel.TextSize = 10
-StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
-StatusLabel.Parent = StatusFrame
-
-local function UpdateStatus(text: string, color: Color3?)
-    if isTerminated then return end
-    StatusLabel.Text = "> " .. text
-    StatusLabel.TextColor3 = color or Color3.fromRGB(220, 220, 220)
-end
-
--- Консоль логов
+-- Консоль вывода событий
 local ConsoleFrame = Instance.new("Frame")
-ConsoleFrame.Size = UDim2.new(1, -16, 0, 160)
-ConsoleFrame.Position = UDim2.new(0, 8, 0, 210)
-ConsoleFrame.BackgroundColor3 = Color3.fromRGB(14, 14, 18)
+ConsoleFrame.Size = UDim2.new(1, -16, 1, -136)
+ConsoleFrame.Position = UDim2.new(0, 8, 0, 130)
+ConsoleFrame.BackgroundColor3 = Color3.fromRGB(12, 13, 18)
+ConsoleFrame.BorderSizePixel = 0
 ConsoleFrame.Parent = MainFrame
 Instance.new("UICorner", ConsoleFrame).CornerRadius = UDim.new(0, 6)
+
+local ConsoleStroke = Instance.new("UIStroke", ConsoleFrame)
+ConsoleStroke.Color = Color3.fromRGB(35, 38, 52)
+ConsoleStroke.Thickness = 1
 
 local LogScroll = Instance.new("ScrollingFrame")
 LogScroll.Size = UDim2.new(1, -8, 1, -8)
 LogScroll.Position = UDim2.new(0, 4, 0, 4)
 LogScroll.BackgroundTransparency = 1
 LogScroll.BorderSizePixel = 0
-LogScroll.ScrollBarThickness = 3
-LogScroll.ScrollBarImageColor3 = Color3.fromRGB(110, 110, 140)
+LogScroll.ScrollBarThickness = 4
+LogScroll.ScrollBarImageColor3 = Color3.fromRGB(90, 100, 130)
 LogScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
 LogScroll.Parent = ConsoleFrame
 
@@ -236,62 +267,64 @@ local function SetLogsCollapsed(collapsed: boolean)
     MainFrame.Size = UDim2.new(0, WINDOW_WIDTH, 0, collapsed and COLLAPSED_HEIGHT or EXPANDED_HEIGHT)
 end
 
-local function ClearLogs()
-    for _, child in ipairs(LogScroll:GetChildren()) do
-        if child:IsA("TextLabel") then child:Destroy() end
-    end
-end
+ToggleBtn.MouseButton1Click:Connect(function()
+    SetLogsCollapsed(not isLogsCollapsed)
+end)
 
+-- =====================================================================
+-- СИСТЕМА ЛОГИРОВАНИЯ
+-- =====================================================================
 local logCounter = 0
-local rawLogLines = {} -- накопитель для сохранения в файл
+local rawLogLines: { string } = {}
 
-local function Log(message: string, msgType: string?)
+local function Log(message: string, msgCategory: string?)
     if isTerminated then return end
     logCounter = logCounter + 1
 
     local color = Color3.fromRGB(200, 200, 200)
     local prefix = "[INFO]"
 
-    if msgType == "SUCCESS" then
-        color = Color3.fromRGB(100, 255, 120)
-        prefix = "[OK]"
-    elseif msgType == "ERROR" then
-        color = Color3.fromRGB(255, 75, 75)
-        prefix = "[ERR]"
-    elseif msgType == "WARN" then
+    if msgCategory == "ROUND" then
+        color = Color3.fromRGB(255, 110, 110)
+        prefix = "[ROUND]"
+    elseif msgCategory == "MAP" then
+        color = Color3.fromRGB(120, 200, 255)
+        prefix = "[MAP]"
+    elseif msgCategory == "COIN" then
+        color = Color3.fromRGB(255, 215, 60)
+        prefix = "[COIN]"
+    elseif msgCategory == "VOTE" then
+        color = Color3.fromRGB(170, 120, 255)
+        prefix = "[VOTE]"
+    elseif msgCategory == "REMOTE" then
+        color = Color3.fromRGB(255, 145, 50)
+        prefix = "[REMOTE]"
+    elseif msgCategory == "DATA" then
+        color = Color3.fromRGB(130, 255, 170)
+        prefix = "[DATA]"
+    elseif msgCategory == "KILL" then
+        color = Color3.fromRGB(255, 70, 180)
+        prefix = "[KILL]"
+    elseif msgCategory == "PLAYER" then
+        color = Color3.fromRGB(110, 255, 230)
+        prefix = "[PLAYER]"
+    elseif msgCategory == "WARN" then
         color = Color3.fromRGB(255, 180, 50)
         prefix = "[WARN]"
-    elseif msgType == "KILL" then
-        color = Color3.fromRGB(255, 60, 200)
-        prefix = "[KILL]"
-    elseif msgType == "TARGET" then
-        color = Color3.fromRGB(70, 190, 255)
-        prefix = "[TARGET]"
-    elseif msgType == "REMOTE" then
-        color = Color3.fromRGB(255, 140, 50)
-        prefix = "[REMOTE]"
-    elseif msgType == "SPY" then
-        color = Color3.fromRGB(235, 110, 215)
-        prefix = "[SPY]"
-    elseif msgType == "FLASH" then
-        color = Color3.fromRGB(255, 60, 80)
-        prefix = "[FLASH]"
-    elseif msgType == "TP" then
-        color = Color3.fromRGB(50, 220, 255)
-        prefix = "[TP]"
+    elseif msgCategory == "ERROR" then
+        color = Color3.fromRGB(255, 75, 75)
+        prefix = "[ERR]"
     end
 
     local timeStr = os.date("%H:%M:%S")
-    local fullText = string.format("%s %s %s", timeStr, prefix, message)
-
-    -- Сохраняем в накопитель для экспорта
-    table.insert(rawLogLines, fullText)
+    local lineText = string.format("%s %s %s", timeStr, prefix, message)
+    table.insert(rawLogLines, lineText)
 
     local lbl = Instance.new("TextLabel")
     lbl.Size = UDim2.new(1, -6, 0, 0)
     lbl.AutomaticSize = Enum.AutomaticSize.Y
     lbl.BackgroundTransparency = 1
-    lbl.Text = fullText
+    lbl.Text = lineText
     lbl.TextColor3 = color
     lbl.Font = Enum.Font.Code
     lbl.TextSize = 10
@@ -300,215 +333,111 @@ local function Log(message: string, msgType: string?)
     lbl.LayoutOrder = logCounter
     lbl.Parent = LogScroll
 
+    -- Авто-скролл вниз
     task.defer(function()
         LogScroll.CanvasPosition = Vector2.new(0, 999999)
     end)
 end
 
--- =====================================================================
--- ПОИСК ТАРГЕТА В UI
--- =====================================================================
-local function FindTargetLabel(): (TextLabel?, string)
-    local pGui = LocalPlayer:FindFirstChildOfClass("PlayerGui") or LocalPlayer:FindFirstChild("PlayerGui")
-    if not pGui then return nil, "PlayerGui не найден!" end
-
-    local mGui = pGui:FindFirstChild("MainGUI")
-    if mGui then
-        local gameObj = mGui:FindFirstChild("Game")
-        if gameObj then
-            local targetFrame = gameObj:FindFirstChild("AssassinTarget")
-            if targetFrame then
-                local label = targetFrame:FindFirstChild("TargetName")
-                if label and label:IsA("TextLabel") then
-                    return label, "MainGUI.Game.AssassinTarget.TargetName"
-                end
-            end
-        end
+local function ClearLogs()
+    for _, child in ipairs(LogScroll:GetChildren()) do
+        if child:IsA("TextLabel") then child:Destroy() end
     end
-
-    local altFrame = pGui:FindFirstChild("AssassinTarget", true)
-    if altFrame then
-        local label = altFrame:FindFirstChild("TargetName")
-        if label and label:IsA("TextLabel") then
-            return label, altFrame:GetFullName() .. ".TargetName"
-        end
-    end
-
-    local anyLabel = pGui:FindFirstChild("TargetName", true)
-    if anyLabel and anyLabel:IsA("TextLabel") then
-        return anyLabel, anyLabel:GetFullName()
-    end
-
-    return nil, "TargetName не найден"
+    table.clear(rawLogLines)
+    logCounter = 0
+    Log("Логи очищены.", "INFO")
 end
 
-local function IsTargetVisible(label: TextLabel?): boolean
-    if not label or not label.Visible then return false end
-    local parent = label.Parent
-    return parent ~= nil and parent:IsA("GuiObject") and parent.Visible
-end
+BtnClear.MouseButton1Click:Connect(ClearLogs)
 
-local function CleanNickname(raw: string): string
-    if not raw then return "" end
-    local cleaned = raw
-    cleaned = string.gsub(cleaned, "%[", "")
-    cleaned = string.gsub(cleaned, "%]", "")
-    cleaned = string.gsub(cleaned, "[\"\'%(%)]", "")
-    cleaned = string.gsub(cleaned, "^%s*[Tt]arget[:%s]*", "")
-    cleaned = string.gsub(cleaned, "^%s*[Ee]liminate[:%s]*", "")
-    cleaned = string.gsub(cleaned, "^%s*@?", "")
-    cleaned = string.gsub(cleaned, "^%s*(.-)%s*$", "%1")
-    return cleaned
-end
-
-local function FindPlayerByName(cleanName: string): (Player?, string)
-    if cleanName == "" or cleanName == "Label" or cleanName == "None" then
-        return nil, "Имя пусто"
-    end
-
-    local exact = Players:FindFirstChild(cleanName)
-    if exact then return exact, "Exact" end
-
-    local lowerClean = string.lower(cleanName)
-    for _, pl in ipairs(Players:GetPlayers()) do
-        if pl ~= LocalPlayer then
-            if string.lower(pl.Name) == lowerClean or string.lower(pl.DisplayName) == lowerClean then
-                return pl, "Match"
-            end
-        end
-    end
-
-    return nil, "Не найден"
-end
-
-local function RunTargetScan(): Player?
-    Log("--- СКАН ТАРГЕТА ---", "TARGET")
-    local label, pathInfo = FindTargetLabel()
-    if not label then
-        Log("ОШИБКА: " .. pathInfo, "ERROR")
-        UpdateStatus("TargetName не найден", Color3.fromRGB(255, 80, 80))
-        return nil
-    end
-
-    if not IsTargetVisible(label) then
-        Log("Окно таргета скрыто (Parent.Visible == false)", "WARN")
-        UpdateStatus("Цель отсутствует", Color3.fromRGB(255, 180, 50))
-        return nil
-    end
-
-    local rawText = label.Text
-    local cleaned = CleanNickname(rawText)
-    Log(string.format("UI: '%s' -> Цель: '%s'", rawText, cleaned), "TARGET")
-
-    if cleaned == "" or cleaned == "Label" or cleaned == "None" then
-        Log("Цель отсутствует в UI", "WARN")
-        UpdateStatus("Цель отсутствует", Color3.fromRGB(255, 180, 50))
-        return nil
-    end
-
-    local player, match = FindPlayerByName(cleaned)
-    if not player then
-        Log("Игрок не найден: " .. match, "ERROR")
-        UpdateStatus("Игрок не найден", Color3.fromRGB(255, 100, 100))
-        return nil
-    end
-
-    local char = player.Character
-    local hum = char and char:FindFirstChildOfClass("Humanoid")
-    local hp = hum and hum.Health or 0
-    Log(string.format("ТАРГЕТ: %s (@%s) [HP: %d]", player.DisplayName, player.Name, math.floor(hp)), "SUCCESS")
-    UpdateStatus("Таргет: " .. player.DisplayName, Color3.fromRGB(100, 255, 100))
-    return player
-end
-
--- =====================================================================
--- ПОИСК И ЭКИПИРОВКА НОЖА
--- =====================================================================
-local function InspectAndEquipKnife(): Tool?
-    local char = LocalPlayer.Character
-    if not char then return nil end
-
-    for _, item in ipairs(char:GetChildren()) do
-        if item:IsA("Tool") and (item.Name == "Knife" or string.find(string.lower(item.Name), "knife")) then
-            return item
-        end
-    end
-
-    local backpack = LocalPlayer:FindFirstChildOfClass("Backpack") or LocalPlayer:FindFirstChild("Backpack")
-    if not backpack then return nil end
-
-    local knife: Tool? = nil
-    for _, item in ipairs(backpack:GetChildren()) do
-        if item:IsA("Tool") and (item.Name == "Knife" or string.find(string.lower(item.Name), "knife")) then
-            knife = item
-            break
-        end
-    end
-    if not knife then knife = backpack:FindFirstChildOfClass("Tool") end
-    if not knife then return nil end
-
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    if hum then pcall(function() hum:EquipTool(knife) end) end
-    if knife.Parent ~= char then pcall(function() knife.Parent = char end) end
-
-    return knife
-end
-
--- =====================================================================
--- НАДЕЖНЫЙ ТУРБО-УДАР (DOUBLE-PULSE FIRETOUCH)
--- =====================================================================
-local function TurboKill(targetPlayer: Player, knife: Tool): boolean
-    local targetChar = targetPlayer.Character
-    if not targetChar then return false end
-
-    local targetHRP = targetChar:FindFirstChild("HumanoidRootPart") or targetChar:FindFirstChild("Torso") :: BasePart?
-    local targetHum = targetChar:FindFirstChildOfClass("Humanoid")
-    local handle = knife:FindFirstChild("Handle") :: BasePart?
-
-    if not targetHRP or not targetHum or targetHum.Health <= 0 or not handle then
-        return false
-    end
-
-    pcall(function() knife:Activate() end)
-
-    if firetouchinterest then
-        -- Двойной импульс касания для 100% срабатывания физики сервера
-        pcall(function()
-            firetouchinterest(targetHRP, handle, 0)
-            firetouchinterest(targetHRP, handle, 1)
-            firetouchinterest(targetHRP, handle, 0)
-            firetouchinterest(targetHRP, handle, 1)
-        end)
-        return true
-    end
-    return false
-end
-
--- Одиночный удар
-local function RunSingleTargetKill()
-    local knife = InspectAndEquipKnife()
-    if not knife then
-        Log("Нож не найден в инвентаре!", "ERROR")
+-- Экспорт лога в файл и буфер обмена
+local function ExportLogsToFile()
+    if #rawLogLines == 0 then
+        Log("Лог пуст — нечего экспортировать", "WARN")
         return
     end
 
-    local target = RunTargetScan()
-    if not target then
-        Log("Цель не найдена в UI!", "WARN")
-        return
-    end
+    local fileName = "mm2_round_diagnostic.txt"
+    local content = table.concat(rawLogLines, "\n")
+    local wf = writefile or (syn and syn.writefile)
 
-    local startTime = tick()
-    local ok = TurboKill(target, knife)
-    if ok then
-        local ms = math.floor((tick() - startTime) * 1000)
-        Log(string.format("🎯 1-Shot нанесён по %s за %d мс!", target.DisplayName, ms), "SUCCESS")
-        UpdateStatus("Ликвидирован: " .. target.DisplayName, Color3.fromRGB(100, 255, 120))
+    if typeof(wf) == "function" then
+        local ok, err = pcall(wf, fileName, content)
+        if ok then
+            Log(string.format("✅ Лог записан в файл: %s (%d строк)", fileName, #rawLogLines), "DATA")
+        else
+            Log("❌ Ошибка записи файла: " .. tostring(err), "ERROR")
+        end
+    else
+        Log("⚠️ Функция writefile недоступна в этом эксплойте", "WARN")
     end
 end
 
+local function CopyLogsToClipboard()
+    if #rawLogLines == 0 then
+        Log("Лог пуст — нечего копировать", "WARN")
+        return
+    end
+    local content = table.concat(rawLogLines, "\n")
+    local sc = setclipboard or toclipboard or (syn and syn.write_clipboard)
+    if typeof(sc) == "function" then
+        local ok, err = pcall(sc, content)
+        if ok then
+            Log(string.format("📋 Лог скопирован в буфер обмена (%d строк)", #rawLogLines), "DATA")
+        else
+            Log("❌ Ошибка буфера: " .. tostring(err), "ERROR")
+        end
+    else
+        Log("⚠️ Функция setclipboard недоступна", "WARN")
+    end
+end
+
+BtnExport.MouseButton1Click:Connect(ExportLogsToFile)
+BtnCopy.MouseButton1Click:Connect(CopyLogsToClipboard)
+
 -- =====================================================================
--- СЕТЕВОЙ ГИБРИД: ПАКЕТНЫЙ ПЕРЕХВАТ (ChangeTarget) + РЕЗЕРВНЫЙ UI WATCHDOG
+-- СЕРИАЛИЗАТОР АРГУМЕНТОВ РЕМОУТОВ
+-- =====================================================================
+local function SerializeArg(v: any, depth: number?): string
+    depth = depth or 0
+    if depth > 2 then return "..." end
+    local t = typeof(v)
+    if t == "string" then
+        return '"' .. tostring(v):sub(1, 100) .. '"'
+    elseif t == "number" or t == "boolean" then
+        return tostring(v)
+    elseif t == "nil" then
+        return "nil"
+    elseif t == "Instance" then
+        local ok, path = pcall(function() return v:GetFullName() end)
+        return "[" .. v.ClassName .. "] " .. (ok and path or v.Name)
+    elseif t == "table" then
+        local parts = {}
+        local count = 0
+        for k, val in pairs(v) do
+            count = count + 1
+            if count > 8 then table.insert(parts, "..."); break end
+            table.insert(parts, tostring(k) .. "=" .. SerializeArg(val, depth + 1))
+        end
+        return "{" .. table.concat(parts, ", ") .. "}"
+    else
+        return t .. "(" .. tostring(v):sub(1, 40) .. ")"
+    end
+end
+
+local function SerializeArgs(...): string
+    local n = select("#", ...)
+    if n == 0 then return "(без параметров)" end
+    local parts = {}
+    for i = 1, n do
+        local v = select(i, ...)
+        table.insert(parts, "#" .. i .. ": " .. SerializeArg(v))
+    end
+    return table.concat(parts, " | ")
+end
+
+-- =====================================================================
+-- ПОИСК REMOTEEVENT
 -- =====================================================================
 local function FindRemoteEvent(name: string): RemoteEvent?
     local direct = ReplicatedStorage:FindFirstChild(name)
@@ -523,872 +452,411 @@ local function FindRemoteEvent(name: string): RemoteEvent?
     return nil
 end
 
-local networkTargetConn: RBXScriptConnection? = nil
-local roleSelectConn: RBXScriptConnection? = nil
-local giveWeaponConn: RBXScriptConnection? = nil
-local roundStartConn: RBXScriptConnection? = nil
-local roundEndConn: RBXScriptConnection? = nil
-local chainConnection: RBXScriptConnection? = nil
-local activeTargetPlayer: Player? = nil
-local activeTargetName = ""
-local killAttemptsForTarget = 0
-
-local function StopKillLoop()
-    isRunning = false
-    activeTargetPlayer = nil
-    activeTargetName = ""
-    killAttemptsForTarget = 0
-
-    if roleSelectConn then roleSelectConn:Disconnect(); roleSelectConn = nil end
-    if giveWeaponConn then giveWeaponConn:Disconnect(); giveWeaponConn = nil end
-    if roundStartConn then roundStartConn:Disconnect(); roundStartConn = nil end
-    if networkTargetConn then networkTargetConn:Disconnect(); networkTargetConn = nil end
-    if roundEndConn then roundEndConn:Disconnect(); roundEndConn = nil end
-    if chainConnection then chainConnection:Disconnect(); chainConnection = nil end
-
-    BtnKill.Text = "⚡ ТУРБО-ЦЕПОЧКА"
-    BtnKill.BackgroundColor3 = Color3.fromRGB(200, 45, 45)
-    UpdateStatus("Турбо-цепочка остановлена", Color3.fromRGB(200, 200, 200))
-    Log("Турбо-цепочка остановлена", "INFO")
-end
-
--- Прямой удар по объекту игрока (вызывается из сети и из UI)
-local function AttackTargetPlayer(targetPlayer: Player, knife: Tool): boolean
-    if not targetPlayer or not targetPlayer.Character then return false end
-
-    local hum = targetPlayer.Character:FindFirstChildOfClass("Humanoid")
-    if not hum or hum.Health <= 0 then return false end
-
-    -- Если пришел новый таргет — сбрасываем счетчик попыток
-    if targetPlayer.Name ~= activeTargetName then
-        activeTargetName = targetPlayer.Name
-        killAttemptsForTarget = 0
-    end
-
-    killAttemptsForTarget = killAttemptsForTarget + 1
-    local tStart = tick()
-    local ok = TurboKill(targetPlayer, knife)
-    local ms = math.floor((tick() - tStart) * 1000)
-
-    if killAttemptsForTarget == 1 then
-        Log(string.format("⚡ [%d мс] Атака цели: %s (@%s)", ms, targetPlayer.DisplayName, targetPlayer.Name), "KILL")
-        UpdateStatus("Атака: " .. targetPlayer.DisplayName, Color3.fromRGB(255, 80, 80))
-    elseif killAttemptsForTarget % 3 == 0 then
-        Log(string.format("🔄 Добивание: %s (Попытка %d)", targetPlayer.DisplayName, killAttemptsForTarget), "WARN")
-    end
-    return ok
-end
-
--- Функция нанесения удара по текущей цели из UI (резерв)
-local function AttackTargetFromLabel(label: TextLabel, knife: Tool)
-    if not IsTargetVisible(label) then return end
-
-    local rawText = label.Text
-    local cleanName = CleanNickname(rawText)
-    if cleanName == "" or cleanName == "Label" or cleanName == "None" then return end
-
-    local targetPlayer = FindPlayerByName(cleanName)
-    if not targetPlayer or not targetPlayer.Character then return end
-
-    activeTargetPlayer = targetPlayer
-    AttackTargetPlayer(targetPlayer, knife)
-end
-
-local function StartKillLoop()
-    if isRunning then
-        StopKillLoop()
-        return
-    end
-
-    isRunning = true
-    activeTargetPlayer = nil
-    activeTargetName = ""
-    killAttemptsForTarget = 0
-
-    BtnKill.Text = "⚡ СТОП ТУРБО"
-    BtnKill.BackgroundColor3 = Color3.fromRGB(40, 180, 50)
-    UpdateStatus("Сетевой Турбо-режим АКТИВЕН", Color3.fromRGB(100, 255, 100))
-    Log("--- СТАРТ СЕТЕВОЙ ТУРБО-ЦЕПОЧКИ v6.0 ---", "KILL")
-
-    task.spawn(function()
-        local knife = InspectAndEquipKnife()
-
-        -- Функция для безопасного получения актуального ножа
-        local function GetReadyKnife(): Tool?
-            local myChar = LocalPlayer.Character
-            if knife and knife.Parent == myChar then
-                return knife
-            end
-            knife = InspectAndEquipKnife() or knife
-            return knife
-        end
-
-        -- 1. СЕТЕВОЙ ПЕРЕХВАТ RoleSelect (Определение стартовой цели за 10с до раунда!)
-        local roleSelectEvent = FindRemoteEvent("RoleSelect")
-        if roleSelectEvent then
-            if roleSelectConn then roleSelectConn:Disconnect() end
-            roleSelectConn = roleSelectEvent.OnClientEvent:Connect(function(r1: any, _, _, _, r2: any, targetName: any, targetKnife: any, targetGun: any, targetUserId: any)
-                if not isRunning or isTerminated then return end
-
-                local targetPlr: Player? = nil
-                if typeof(targetUserId) == "number" and targetUserId > 0 then
-                    targetPlr = Players:GetPlayerByUserId(targetUserId)
-                end
-                if not targetPlr and typeof(targetName) == "string" and targetName ~= "" then
-                    targetPlr = Players:FindFirstChild(targetName) or FindPlayerByName(targetName)
-                end
-
-                if targetPlr then
-                    activeTargetPlayer = targetPlr
-                    activeTargetName = targetPlr.Name
-                    Log(string.format("🎯 [RoleSelect 0мс] Стартовая цель получена: %s (@%s)", targetPlr.DisplayName, targetPlr.Name), "TARGET")
-                    UpdateStatus("Стартовая цель: " .. targetPlr.DisplayName, Color3.fromRGB(70, 190, 255))
-
-                    local currentKnife = GetReadyKnife()
-                    if currentKnife then
-                        AttackTargetPlayer(targetPlr, currentKnife)
-                    end
-                end
-            end)
-            Log("📡 Сетевой перехват [RoleSelect] подключен (предвидение 1-й цели)", "SUCCESS")
-        end
-
-        -- 2. СЕТЕВОЙ ПЕРЕХВАТ GiveWeapon (Мгновенный удар при выдаче ножа)
-        local giveWeaponEvent = FindRemoteEvent("GiveWeapon")
-        if giveWeaponEvent then
-            if giveWeaponConn then giveWeaponConn:Disconnect() end
-            giveWeaponConn = giveWeaponEvent.OnClientEvent:Connect(function(weaponName: any)
-                if not isRunning or isTerminated then return end
-                if tostring(weaponName) == "Knife" or string.find(string.lower(tostring(weaponName or "")), "knife") then
-                    local currentKnife = GetReadyKnife()
-                    if currentKnife and activeTargetPlayer then
-                        Log("🗡 [GiveWeapon] Нож выдан сервером, мгновенный удар!", "KILL")
-                        AttackTargetPlayer(activeTargetPlayer, currentKnife)
-                    end
-                end
-            end)
-        end
-
-        -- 3. СЕТЕВОЙ ПЕРЕХВАТ RoundStart (Сигнал старта раунда)
-        local roundStartEvent = FindRemoteEvent("RoundStart")
-        if roundStartEvent then
-            if roundStartConn then roundStartConn:Disconnect() end
-            roundStartConn = roundStartEvent.OnClientEvent:Connect(function()
-                if not isRunning or isTerminated then return end
-                local currentKnife = GetReadyKnife()
-                if currentKnife and activeTargetPlayer then
-                    AttackTargetPlayer(activeTargetPlayer, currentKnife)
-                end
-            end)
-        end
-
-        -- 4. СЕТЕВОЙ ПЕРЕХВАТ ChangeTarget (Мгновенная сбыча следующей цели при каждом килле!)
-        local changeTargetEvent = FindRemoteEvent("ChangeTarget")
-        if changeTargetEvent then
-            if networkTargetConn then networkTargetConn:Disconnect() end
-            networkTargetConn = changeTargetEvent.OnClientEvent:Connect(function(targetName: any, targetKnife: any, targetGun: any, targetUserId: any)
-                if not isRunning or isTerminated then return end
-
-                local targetPlr: Player? = nil
-                -- Поиск O(1) по UserId без строковых задержек
-                if typeof(targetUserId) == "number" and targetUserId > 0 then
-                    targetPlr = Players:GetPlayerByUserId(targetUserId)
-                end
-                if not targetPlr and typeof(targetName) == "string" and targetName ~= "" then
-                    targetPlr = Players:FindFirstChild(targetName) or FindPlayerByName(targetName)
-                end
-
-                if targetPlr then
-                    activeTargetPlayer = targetPlr
-                    activeTargetName = targetPlr.Name
-                    Log(string.format("📡 [ChangeTarget 0мс] Новый таргет: %s (@%s)", targetPlr.DisplayName, targetPlr.Name), "TARGET")
-
-                    local currentKnife = GetReadyKnife()
-                    if currentKnife then
-                        AttackTargetPlayer(targetPlr, currentKnife)
-                    end
-                end
-            end)
-            Log("📡 Сетевой перехват [ChangeTarget] подключен (0 мс реакция)", "SUCCESS")
-        end
-
-        -- 5. СЕТЕВОЙ ПЕРЕХВАТ ОКОНЧАНИЯ РАУНДА (RoundEndFade)
-        local roundEndEvent = FindRemoteEvent("RoundEndFade")
-        if roundEndEvent then
-            if roundEndConn then roundEndConn:Disconnect() end
-            roundEndConn = roundEndEvent.OnClientEvent:Connect(function()
-                if isRunning then
-                    Log("🏁 [СЕТЬ] Раунд окончен (пакет RoundEndFade)", "SUCCESS")
-                    UpdateStatus("РАУНД ВЫИГРАН! Победа.", Color3.fromRGB(100, 255, 120))
-                    StopKillLoop()
-                end
-            end)
-        end
-
-        -- 6. Резервный старт из UI (если раунд уже идёт)
-        local initialLabel = FindTargetLabel()
-        if initialLabel and IsTargetVisible(initialLabel) then
-            local currentKnife = GetReadyKnife()
-            if currentKnife then
-                AttackTargetFromLabel(initialLabel, currentKnife)
-            end
-        end
-
-        if initialLabel then
-            if chainConnection then chainConnection:Disconnect() end
-            chainConnection = initialLabel:GetPropertyChangedSignal("Text"):Connect(function()
-                if not isRunning or isTerminated then return end
-                local currentKnife = GetReadyKnife()
-                if currentKnife then
-                    AttackTargetFromLabel(initialLabel, currentKnife)
-                end
-            end)
-        end
-
-        -- 7. Ультра-быстрый Watchdog (каждые 0.02с добивание цели и контроль жизни)
-        local emptyCounter = 0
-        while isRunning and not isTerminated do
-            task.wait(0.02)
-
-            local myChar = LocalPlayer.Character
-            local myHum = myChar and myChar:FindFirstChildOfClass("Humanoid")
-            if not myChar or not myHum or myHum.Health <= 0 then
-                Log("Персонаж погиб — остановка", "ERROR")
-                break
-            end
-
-            -- Авто-добивание: если цель жива, повторяем импульс
-            if activeTargetPlayer and activeTargetPlayer.Character then
-                local hum = activeTargetPlayer.Character:FindFirstChildOfClass("Humanoid")
-                if hum and hum.Health > 0 then
-                    local currentKnife = GetReadyKnife()
-                    if currentKnife then
-                        AttackTargetPlayer(activeTargetPlayer, currentKnife)
-                    end
-                else
-                    -- Цель повержена, обнуляем ссылку и ждем ChangeTarget
-                    activeTargetPlayer = nil
-                end
-            end
-
-            -- Проверка интерфейса как подстраховка
-            local currentLabel = FindTargetLabel()
-            local isVisible = IsTargetVisible(currentLabel)
-            local raw = currentLabel and currentLabel.Text or ""
-            local clean = CleanNickname(raw)
-
-            local hasTarget = isVisible and clean ~= "" and clean ~= "Label" and clean ~= "None"
-
-            if not hasTarget and not activeTargetPlayer then
-                emptyCounter = emptyCounter + 1
-                -- Если целей нет более 0.3 сек (15 тиков по 0.02с) — раунд окончен
-                if emptyCounter >= 15 then
-                    Log("Окно таргетов скрыто! Все игроки устранены.", "SUCCESS")
-                    UpdateStatus("РАУНД ВЫИГРАН! Победа.", Color3.fromRGB(100, 255, 120))
-                    break
-                end
-            else
-                emptyCounter = 0
-                if (not activeTargetPlayer or not activeTargetPlayer.Character) and currentLabel then
-                    local currentKnife = GetReadyKnife()
-                    if currentKnife then
-                        AttackTargetFromLabel(currentLabel, currentKnife)
-                    end
-                end
-            end
-        end
-
-        StopKillLoop()
-    end)
-end
-
 -- =====================================================================
--- ПОЛНЫЙ REMOTE SNIFFER
+-- ТРЕКЕР СОСТОЯНИЯ: СЕТЕВЫЕ СОБЫТИЯ (REMOTES)
 -- =====================================================================
+local PlayerCoinsCache: { [string]: number } = {}
+local PlayerRolesCache: { [string]: string } = {}
+local PlayerAliveCache: { [string]: boolean } = {}
 
--- Сериализатор аргументов ремоута
-local function SerializeArg(v, depth)
-    depth = depth or 0
-    if depth > 2 then return "..." end
-    local t = typeof(v)
-    if t == "string" then
-        return '"' .. tostring(v):sub(1, 80) .. '"'
-    elseif t == "number" or t == "boolean" then
-        return tostring(v)
-    elseif t == "nil" then
-        return "nil"
-    elseif t == "Instance" then
-        local ok, full = pcall(function() return v:GetFullName() end)
-        return "[" .. v.ClassName .. "] " .. (ok and full or v.Name)
-    elseif t == "table" then
-        local parts = {}
-        local i = 0
-        for k, val in pairs(v) do
-            i = i + 1
-            if i > 6 then table.insert(parts, "..."); break end
-            table.insert(parts, tostring(k) .. "=" .. SerializeArg(val, depth + 1))
-        end
-        return "{" .. table.concat(parts, ", ") .. "}"
-    else
-        return t .. "(" .. tostring(v):sub(1, 40) .. ")"
-    end
-end
-
-local function SerializeArgs(...)
-    local count = select("#", ...)
-    if count == 0 then return "(нет аргументов)" end
-    local parts = {}
-    for i = 1, count do
-        local v = select(i, ...)
-        table.insert(parts, "[" .. i .. "] " .. SerializeArg(v))
-    end
-    return table.concat(parts, "  |  ")
-end
-
--- Состояние снифера
-local snifferActive = false
-local snifferConns: { RBXScriptConnection } = {}
-local snifferHooked: { [Instance]: boolean } = {}
-
-local function StopSniffer()
-    snifferActive = false
-    for _, c in ipairs(snifferConns) do
-        if c and c.Connected then pcall(function() c:Disconnect() end) end
-    end
-    table.clear(snifferConns)
-    table.clear(snifferHooked)
-    BtnRemoteSniffer.Text = "🔴 REMOTE SNIFFER"
-    BtnRemoteSniffer.BackgroundColor3 = Color3.fromRGB(140, 40, 160)
-    Log("=== SNIFFER ОСТАНОВЛЕН. Строк в логе: " .. #rawLogLines .. " ===", "WARN")
-    UpdateStatus("Remote Sniffer остановлен", Color3.fromRGB(200, 200, 200))
-end
-
-local function HookRemote(remote)
-    if snifferHooked[remote] then return end
-    snifferHooked[remote] = true
-
-    if remote:IsA("RemoteEvent") then
-        local conn = remote.OnClientEvent:Connect(function(...)
-            if not snifferActive then return end
-            local ok, path = pcall(function() return remote:GetFullName() end)
-            local name = ok and path or remote.Name
-            Log(string.format("[RE->CLIENT] %s  >>  %s", name, SerializeArgs(...)), "REMOTE")
+local function RegisterRemoteHook(name: string, callback: (...any) -> ())
+    local re = FindRemoteEvent(name)
+    if re then
+        local conn = re.OnClientEvent:Connect(function(...)
+            if isTerminated then return end
+            callback(...)
         end)
-        table.insert(snifferConns, conn)
-
-    elseif remote:IsA("RemoteFunction") then
-        -- RemoteFunction: можно только залогировать факт существования
-        -- (OnClientInvoke без замены оригинального обработчика не перехватывается)
-        local ok, path = pcall(function() return remote:GetFullName() end)
-        Log(string.format("[RF] %s (существует, пассивно)", ok and path or remote.Name), "REMOTE")
+        table.insert(activeConnections, conn)
+        Log(string.format("📡 Перехватчик [%s] успешно подключен", name), "INFO")
+    else
+        Log(string.format("⚠️ RemoteEvent [%s] не найден в ReplicatedStorage", name), "WARN")
     end
 end
 
-local function StartSniffer()
-    if snifferActive then
-        StopSniffer()
+-- 1. RoleSelect: Выдача ролей
+RegisterRemoteHook("RoleSelect", function(...)
+    local role = select(1, ...)
+    Log(string.format("🎭 [RoleSelect] Выдана роль: %s | Параметры: %s", tostring(role), SerializeArgs(...)), "ROUND")
+    LblRoundStatus.Text = "Раунд: Выдача ролей (" .. tostring(role) .. ")"
+    LblRoundStatus.TextColor3 = Color3.fromRGB(100, 220, 255)
+end)
+
+-- 2. RoundStart: Официальный старт раунда
+RegisterRemoteHook("RoundStart", function(...)
+    local duration = select(1, ...)
+    Log(string.format("🚀 [RoundStart] Раунд официально НАЧАТ! Длительность: %s сек | Параметры: %s", tostring(duration), SerializeArgs(...)), "ROUND")
+    LblRoundStatus.Text = "Раунд: ИДЁТ (" .. tostring(duration) .. "с)"
+    LblRoundStatus.TextColor3 = Color3.fromRGB(100, 255, 120)
+end)
+
+-- 3. RoundEndFade: Завершение раунда сервером
+RegisterRemoteHook("RoundEndFade", function(...)
+    Log(string.format("🏁 [RoundEndFade] СЕРВЕР ОБЪЯВИЛ КОНЕЦ РАУНДА! Параметры: %s", SerializeArgs(...)), "ROUND")
+    LblRoundStatus.Text = "Раунд: ЗАВЕРШЁН (Конец)"
+    LblRoundStatus.TextColor3 = Color3.fromRGB(255, 100, 100)
+end)
+
+-- 4. ChangeTarget: Система таргетов Assassin
+RegisterRemoteHook("ChangeTarget", function(targetName: any, targetKnife: any, targetGun: any, targetUserId: any)
+    Log(string.format("🎯 [ChangeTarget] Цель: '%s' | Нож: %s | Оружие: %s | UserId: %s", 
+        tostring(targetName), tostring(targetKnife), tostring(targetGun), tostring(targetUserId)), "ROUND")
+end)
+
+-- 5. GiveWeapon: Сервер выдал оружие игроку
+RegisterRemoteHook("GiveWeapon", function(weaponName: any)
+    Log(string.format("🗡 [GiveWeapon] Сервер выдал оружие клиенту: '%s'", tostring(weaponName)), "ROUND")
+end)
+
+-- 6. KillEvent: Смерть участника
+RegisterRemoteHook("KillEvent", function(victimName: any, ...)
+    Log(string.format("💀 [KillEvent] Погиб игрок: '%s' | Доп. данные: %s", tostring(victimName), SerializeArgs(...)), "KILL")
+end)
+
+-- 7. SpecialXPEvent: Начисление опыта
+RegisterRemoteHook("SpecialXPEvent", function(reason: any, ...)
+    Log(string.format("⭐ [SpecialXPEvent] XP Событие: '%s'", tostring(reason)), "KILL")
+end)
+
+-- 8. PlayerDataChanged: Глобальная серверная таблица (Монеты ВСЕХ игроков, роли, статус жизни)
+-- Это ключевой ответ на вопрос «как скрипт видит чужие монеты»:
+-- MM2 рассылает ВСЕМ клиентам сводную таблицу игроков, где есть поле .Coins, .Dead, .Role!
+RegisterRemoteHook("PlayerDataChanged", function(data: any)
+    if typeof(data) ~= "table" then
+        Log("[PlayerDataChanged] Получены данные не-табличного типа: " .. tostring(data), "DATA")
         return
     end
 
-    snifferActive = true
-    BtnRemoteSniffer.Text = "🟢 SNIFFER: ON"
-    BtnRemoteSniffer.BackgroundColor3 = Color3.fromRGB(40, 160, 60)
-    Log("=== REMOTE SNIFFER ЗАПУЩЕН ===", "REMOTE")
-    Log("Перехватываем ВСЕ RemoteEvent в ReplicatedStorage...", "REMOTE")
+    local countPlayers = 0
+    local coinDeltas = {}
+    local roleDeltas = {}
+    local deathDeltas = {}
 
-    -- Хукаем все существующие ремоуты
-    local reCount, rfCount = 0, 0
-    for _, v in ipairs(ReplicatedStorage:GetDescendants()) do
-        if v:IsA("RemoteEvent") then
-            HookRemote(v)
-            reCount = reCount + 1
-            Log("  [RE] " .. v:GetFullName(), "REMOTE")
-        elseif v:IsA("RemoteFunction") then
-            HookRemote(v)
-            rfCount = rfCount + 1
+    for pName, pInfo in pairs(data) do
+        countPlayers = countPlayers + 1
+        local playerName = tostring(pName)
+
+        if typeof(pInfo) == "table" then
+            -- Монеты
+            if pInfo.Coins ~= nil then
+                local currentCoins = tonumber(pInfo.Coins) or 0
+                local prevCoins = PlayerCoinsCache[playerName]
+                if prevCoins ~= nil and currentCoins ~= prevCoins then
+                    local diff = currentCoins - prevCoins
+                    table.insert(coinDeltas, string.format("%s (%+d -> %d)", playerName, diff, currentCoins))
+                end
+                PlayerCoinsCache[playerName] = currentCoins
+            end
+
+            -- Роли
+            if pInfo.Role ~= nil then
+                local r = tostring(pInfo.Role)
+                local prevR = PlayerRolesCache[playerName]
+                if prevR ~= nil and r ~= prevR then
+                    table.insert(roleDeltas, string.format("%s: %s -> %s", playerName, prevR, r))
+                end
+                PlayerRolesCache[playerName] = r
+            end
+
+            -- Смерти (Dead)
+            if pInfo.Dead ~= nil then
+                local isDead = (pInfo.Dead == true)
+                local prevDead = PlayerAliveCache[playerName]
+                if prevDead ~= nil and isDead ~= prevDead then
+                    table.insert(deathDeltas, string.format("%s: %s", playerName, isDead and "МЁРТВ" or "ЖИВ"))
+                end
+                PlayerAliveCache[playerName] = isDead
+            end
         end
     end
-    Log(string.format("Подключено: %d RemoteEvent, %d RemoteFunction", reCount, rfCount), "REMOTE")
-    Log("Ожидаем события... (убей кого-нибудь или получи таргет)", "WARN")
 
-    -- Хукаем новые ремоуты при появлении
-    local addConn = ReplicatedStorage.DescendantAdded:Connect(function(v)
-        if not snifferActive then return end
-        if v:IsA("RemoteEvent") or v:IsA("RemoteFunction") then
-            HookRemote(v)
-            Log("[NEW REMOTE] " .. v:GetFullName(), "REMOTE")
+    if #coinDeltas > 0 then
+        Log("🪙 [PlayerData: МОНЕТЫ] " .. table.concat(coinDeltas, ", "), "COIN")
+    end
+    if #roleDeltas > 0 then
+        Log("🎭 [PlayerData: РОЛИ] " .. table.concat(roleDeltas, ", "), "DATA")
+    end
+    if #deathDeltas > 0 then
+        Log("⚰️ [PlayerData: СТАТУС] " .. table.concat(deathDeltas, ", "), "DATA")
+    end
+
+    -- Если пришёл пустой словарь {} — это сброс состояния между раундами!
+    if countPlayers == 0 then
+        Log("🔄 [PlayerDataChanged] Таблица игроков ОЧИЩЕНА сервером (Сброс между раундами)", "DATA")
+        table.clear(PlayerCoinsCache)
+        table.clear(PlayerRolesCache)
+        table.clear(PlayerAliveCache)
+    end
+end)
+
+-- =====================================================================
+-- ТРЕКЕР КАРТЫ И МОНЕТ В WORKSPACE
+-- =====================================================================
+local CurrentMapInstance: Instance? = nil
+local CurrentCoinContainer: Instance? = nil
+local coinSpawnTracked = false
+local mapSpawnTick = 0
+
+local function CheckCoinContainerCoins(container: Instance): number
+    local count = 0
+    for _, desc in ipairs(container:GetDescendants()) do
+        if desc:IsA("TouchTransmitter") and desc.Parent and desc.Parent:IsA("BasePart") then
+            count = count + 1
+        end
+    end
+    return count
+end
+
+local function HookCoinContainer(coinContainer: Instance)
+    CurrentCoinContainer = coinContainer
+    local initialCount = CheckCoinContainerCoins(coinContainer)
+    LblCoinsInfo.Text = string.format("Монеты: %d на карте", initialCount)
+
+    local spawnDelta = (mapSpawnTick > 0) and string.format("(через %.2fc после карты)", tick() - mapSpawnTick) or ""
+    Log(string.format("🟡 [CoinContainer] Обнаружен! Стартовое число монет: %d %s", initialCount, spawnDelta), "COIN")
+
+    -- Отслеживаем добавление монет
+    local addConn = coinContainer.DescendantAdded:Connect(function(desc)
+        if desc:IsA("TouchTransmitter") then
+            if not coinSpawnTracked then
+                coinSpawnTracked = true
+                local d = (mapSpawnTick > 0) and string.format("(через %.2fc после спавна карты)", tick() - mapSpawnTick) or ""
+                Log(string.format("✨ [МОНЕТЫ] НАЧАЛСЯ СПАВН МОНЕТ на карте! %s", d), "COIN")
+            end
+            local cur = CheckCoinContainerCoins(coinContainer)
+            LblCoinsInfo.Text = string.format("Монеты: %d на карте", cur)
         end
     end)
-    table.insert(snifferConns, addConn)
+    table.insert(activeConnections, addConn)
 
-    UpdateStatus("Remote Sniffer активен — жди убийства!", Color3.fromRGB(255, 140, 50))
+    -- Отслеживаем удаление монет (подбор)
+    local remConn = coinContainer.ChildRemoved:Connect(function()
+        task.defer(function()
+            if coinContainer and coinContainer.Parent then
+                local cur = CheckCoinContainerCoins(coinContainer)
+                LblCoinsInfo.Text = string.format("Монеты: %d на карте", cur)
+            end
+        end)
+    end)
+    table.insert(activeConnections, remConn)
+
+    -- Отслеживаем уничтожение контейнера
+    local ancConn = coinContainer.AncestryChanged:Connect(function(_, parent)
+        if not parent then
+            Log("❌ [CoinContainer] УДАЛЁН из Workspace!", "COIN")
+            CurrentCoinContainer = nil
+            coinSpawnTracked = false
+            LblCoinsInfo.Text = "Монеты: 0 (контейнер удален)"
+        end
+    end)
+    table.insert(activeConnections, ancConn)
 end
 
--- Кнопка «COPY/SAVE LOG»: сохраняет все строки в файл + копирует в буфер
-local function ExportLog()
-    if #rawLogLines == 0 then
-        Log("Лог пуст — нечего экспортировать", "WARN")
-        return
-    end
+local function InspectMapCandidate(child: Instance)
+    -- Исключаем служебные папки и игроков
+    if child == LocalPlayer.Character or Players:GetPlayerFromCharacter(child) then return end
+    if child.Name == "Lobby" or child.Name == "Terrain" or child.Name == "Camera" then return end
 
-    local content = table.concat(rawLogLines, "\n")
-    local fileName = "mm2_remote_log.txt"
+    local container = child:FindFirstChild("CoinContainer")
+    local spawns = child:FindFirstChild("Spawns")
 
-    -- Пробуем writefile (Synapse / Krnl / Delta и т.д.)
-    local wf = writefile or (syn and syn.writefile)
-    if typeof(wf) == "function" then
-        local ok, err = pcall(wf, fileName, content)
-        if ok then
-            Log("✅ Лог сохранён в: " .. fileName .. " (" .. #rawLogLines .. " строк)", "SUCCESS")
+    if container or spawns then
+        CurrentMapInstance = child
+        mapSpawnTick = tick()
+        coinSpawnTracked = false
+        LblCurrentMap.Text = "Карта: " .. child.Name
+        LblCurrentMap.TextColor3 = Color3.fromRGB(100, 255, 150)
+        Log(string.format("🗺️ [КАРТА] СПАВН КАРТЫ: '%s' (Класс: %s, Spawns=%s, CoinContainer=%s)", 
+            child.Name, child.ClassName, tostring(spawns ~= nil), tostring(container ~= nil)), "MAP")
+
+        if container then
+            HookCoinContainer(container)
         else
-            Log("❌ writefile ошибка: " .. tostring(err), "ERROR")
-        end
-    else
-        Log("writefile недоступен в этом эксплойте", "WARN")
-    end
-
-    -- Пробуем setclipboard
-    local sc = setclipboard or toclipboard or (syn and syn.write_clipboard)
-    if typeof(sc) == "function" then
-        local ok2 = pcall(sc, content)
-        if ok2 then
-            Log("✅ Лог скопирован в буфер обмена (" .. #rawLogLines .. " строк)", "SUCCESS")
-        end
-    else
-        Log("setclipboard недоступен — только writefile", "WARN")
-    end
-
-    UpdateStatus("Лог экспортирован: " .. #rawLogLines .. " строк", Color3.fromRGB(100, 255, 120))
-end
-
--- Расширенный сниффер данных (кнопка 🕵️)
-local function InspectAssassinData()
-    Log("--- СНИФФЕР ДАННЫХ ASSASSIN ---", "TARGET")
-
-    -- Все ремоуты в ReplicatedStorage
-    Log("== ВСЕ REMOTES в ReplicatedStorage ==", "TARGET")
-    local found = 0
-    for _, v in ipairs(ReplicatedStorage:GetDescendants()) do
-        if v:IsA("RemoteEvent") or v:IsA("RemoteFunction") then
-            local tp = v:IsA("RemoteEvent") and "RE" or "RF"
-            Log(string.format("[%s] %s", tp, v:GetFullName()), "REMOTE")
-            found = found + 1
-        end
-    end
-    if found == 0 then Log("Ремоуты не найдены!", "WARN") end
-
-    -- Атрибуты LocalPlayer
-    local myAttrs = LocalPlayer:GetAttributes()
-    local attrList = {}
-    for k, v in pairs(myAttrs) do
-        table.insert(attrList, string.format("%s=%s", tostring(k), tostring(v)))
-    end
-    Log("Атрибуты LocalPlayer: " .. (next(attrList) and table.concat(attrList, " | ") or "(нет)"), "INFO")
-
-    -- Атрибуты других игроков (ищем target/assassin)
-    local targetAttrFound = false
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if plr ~= LocalPlayer then
-            for k, v in pairs(plr:GetAttributes()) do
-                local kl = string.lower(tostring(k))
-                if string.find(kl, "target") or string.find(kl, "assassin") or string.find(kl, "kill") then
-                    Log(string.format("🔥 АТРИБУТ %s у %s = %s", tostring(k), plr.Name, tostring(v)), "SUCCESS")
-                    targetAttrFound = true
+            -- Ждем появления CoinContainer, если он загружается следом
+            local ccConn: RBXScriptConnection? = nil
+            ccConn = child.ChildAdded:Connect(function(newChild)
+                if newChild.Name == "CoinContainer" then
+                    if ccConn then ccConn:Disconnect() end
+                    HookCoinContainer(newChild)
                 end
-            end
-        end
-    end
-    if not targetAttrFound then Log("Атрибуты Target скрыты сервером.", "WARN") end
-
-    UpdateStatus("Инспекция завершена", Color3.fromRGB(180, 220, 255))
-end
-
--- =====================================================================
--- ТЕСТ REMOTEFUNCTION ELIMINATEPLAYER
--- =====================================================================
-local function FindRemoteFunction(name: string): RemoteFunction?
-    local direct = ReplicatedStorage:FindFirstChild(name)
-    if direct and direct:IsA("RemoteFunction") then return direct end
-    local deep = ReplicatedStorage:FindFirstChild(name, true)
-    if deep and deep:IsA("RemoteFunction") then return deep end
-    for _, item in ipairs(ReplicatedStorage:GetDescendants()) do
-        if item:IsA("RemoteFunction") and item.Name == name then
-            return item
-        end
-    end
-    return nil
-end
-
-local function RunTestEliminate()
-    Log("--- ТЕСТ REMOTEFUNCTION: EliminatePlayer ---", "KILL")
-    local rf = FindRemoteFunction("EliminatePlayer")
-    if not rf then
-        Log("❌ RemoteFunction 'EliminatePlayer' не найден в ReplicatedStorage!", "ERROR")
-        UpdateStatus("EliminatePlayer не найден", Color3.fromRGB(255, 80, 80))
-        return
-    end
-
-    Log("✓ Найден RF: " .. rf:GetFullName(), "SUCCESS")
-
-    -- Проверяем статус ножа (в руке или в инвентаре)
-    local char = LocalPlayer.Character
-    local hasKnifeInHand = false
-    if char then
-        for _, item in ipairs(char:GetChildren()) do
-            if item:IsA("Tool") and (item.Name == "Knife" or string.find(string.lower(item.Name), "knife")) then
-                hasKnifeInHand = true
-                break
-            end
-        end
-    end
-    Log("Статус ножа: " .. (hasKnifeInHand and "В РУКЕ" or "В РЮКЗАКЕ / НЕ ЭКИПИРОВАН"), "INFO")
-
-    -- Ищем цель
-    local target = RunTargetScan()
-    if not target then
-        for _, pl in ipairs(Players:GetPlayers()) do
-            if pl ~= LocalPlayer and pl.Character and pl.Character:FindFirstChildOfClass("Humanoid") and pl.Character:FindFirstChildOfClass("Humanoid").Health > 0 then
-                target = pl
-                break
-            end
-        end
-        if target then
-            Log("Цель взята из списка игроков: " .. target.DisplayName, "WARN")
-        end
-    end
-
-    if not target then
-        Log("❌ Живая цель не найдена для теста!", "ERROR")
-        UpdateStatus("Цель не найдена", Color3.fromRGB(255, 100, 100))
-        return
-    end
-
-    Log(string.format("🚀 Отправляем: %s:InvokeServer(Player: %s)...", rf.Name, target.Name), "KILL")
-    UpdateStatus("InvokeServer по " .. target.DisplayName .. "...", Color3.fromRGB(255, 140, 50))
-
-    local startTime = tick()
-    local ok, res = pcall(function()
-        return rf:InvokeServer(target)
-    end)
-    local ms = math.floor((tick() - startTime) * 1000)
-
-    if ok then
-        Log(string.format("✅ [%d мс] InvokeServer выполнен! Ответ: %s", ms, SerializeArg(res)), "SUCCESS")
-        UpdateStatus("RF ответ: " .. tostring(res), Color3.fromRGB(100, 255, 120))
-    else
-        Log(string.format("❌ [%d мс] InvokeServer ОШИБКА: %s", ms, tostring(res)), "ERROR")
-        UpdateStatus("RF ошибка: " .. tostring(res):sub(1, 30), Color3.fromRGB(255, 80, 80))
-    end
-end
-
--- =====================================================================
--- ДЕТЕКТОР СЛЕЖКИ ЗА ЧИТЕРАМИ (ALL-PLAYER COMBAT SPY + COIN/TP DETECTOR)
--- =====================================================================
-local spyActive = false
-local spyTargetPlayer: Player? = nil
-local spyConnections: { RBXScriptConnection } = {}
-local spyEquipTicks: { [Player]: number } = {}
-local spyLastTools: { [Player]: string } = {}
-local spyLastPos: Vector3? = nil
-local spyLastPosTick = 0
-local spyIsUnderMap = false
-local spyPlayerCoins: { [string]: number } = {}
-
-local function StopSpy()
-    spyActive = false
-    spyTargetPlayer = nil
-    spyLastPos = nil
-    spyIsUnderMap = false
-    table.clear(spyEquipTicks)
-    table.clear(spyLastTools)
-    table.clear(spyPlayerCoins)
-
-    for _, c in ipairs(spyConnections) do
-        if c and c.Connected then pcall(function() c:Disconnect() end) end
-    end
-    table.clear(spyConnections)
-
-    BtnSpyToggle.Text = "🕵️ СЛЕЖКА: ВЫКЛ"
-    BtnSpyToggle.BackgroundColor3 = Color3.fromRGB(150, 45, 120)
-    Log("--- СЛЕЖКА ЗА ЧИТЕРАМИ ОСТАНОВЛЕНА ---", "SPY")
-    UpdateStatus("Слежка остановлена", Color3.fromRGB(200, 200, 200))
-end
-
--- Хук персонажа любого игрока для ловли экипировки ножа
-local function HookPlayerForEquip(plr: Player, char: Model)
-    -- Проверка ножа прямо сейчас при подключении
-    for _, item in ipairs(char:GetChildren()) do
-        if item:IsA("Tool") then
-            Log(string.format("👀 [ИНВЕНТАРЬ] У %s СЕЙЧАС В РУКАХ: '%s'", plr.Name, item.Name), "SPY")
-            spyEquipTicks[plr] = tick()
-            spyLastTools[plr] = item.Name
-        end
-    end
-
-    -- Ловим момент когда достал оружие
-    local addConn = char.ChildAdded:Connect(function(child)
-        if not spyActive then return end
-        if child:IsA("Tool") then
-            spyEquipTicks[plr] = tick()
-            spyLastTools[plr] = child.Name
-            Log(string.format("👀 [ИНВЕНТАРЬ] %s ДОСТАЛ: '%s' (%s)", plr.Name, child.Name, os.date("%H:%M:%S")), "SPY")
-        end
-    end)
-    table.insert(spyConnections, addConn)
-
-    -- Ловим момент когда убрал (детектор микро-замаха Flash-Equip)
-    local remConn = char.ChildRemoved:Connect(function(child)
-        if not spyActive then return end
-        if child:IsA("Tool") then
-            local startTick = spyEquipTicks[plr] or tick()
-            local durationMs = math.floor((tick() - startTick) * 1000)
-            if durationMs <= 85 then
-                -- FLASH-EQUIP: держал нож меньше 85 мс (для глаза это пустота!)
-                Log(string.format("⚡🔥 [FLASH-EQUIP] %s СКРЫТЫЙ УДАР! Держал '%s' всего %d мс!", plr.Name, child.Name, durationMs), "FLASH")
-            else
-                Log(string.format("👀 [ИНВЕНТАРЬ] %s убрал '%s' (держал %d мс)", plr.Name, child.Name, durationMs), "SPY")
-            end
-        end
-    end)
-    table.insert(spyConnections, remConn)
-end
-
-local function StartSpy(targetPlr: Player?)
-    if spyActive then
-        StopSpy()
-    end
-
-    spyActive = true
-    spyTargetPlayer = targetPlr
-    spyLastPos = nil
-    spyIsUnderMap = false
-    table.clear(spyEquipTicks)
-    table.clear(spyLastTools)
-    table.clear(spyPlayerCoins)
-
-    local targetName = targetPlr and targetPlr.Name or "ВСЕ ИГРОКИ"
-    BtnSpyToggle.Text = "🟢 СЛЕЖКА: " .. targetName:sub(1, 10)
-    BtnSpyToggle.BackgroundColor3 = Color3.fromRGB(40, 160, 60)
-    Log(string.format("--- 🕵️ СЛЕЖКА АКТИВНА ПО: %s ---", targetName), "SPY")
-    UpdateStatus("Слежка за: " .. targetName, Color3.fromRGB(240, 110, 215))
-
-    -- 1. ХУКАЕМ ВСЕХ ИГРОКОВ НА СЕРВЕРЕ (чтобы не упустить ни одного читера)
-    for _, pl in ipairs(Players:GetPlayers()) do
-        if pl ~= LocalPlayer then
-            if pl.Character then
-                HookPlayerForEquip(pl, pl.Character)
-            end
-            local cConn = pl.CharacterAdded:Connect(function(c)
-                if not spyActive then return end
-                task.wait(0.05)
-                HookPlayerForEquip(pl, c)
             end)
-            table.insert(spyConnections, cConn)
+            if ccConn then table.insert(activeConnections, ccConn) end
         end
+
+        local remConn = child.AncestryChanged:Connect(function(_, parent)
+            if not parent then
+                local lifetime = (mapSpawnTick > 0) and string.format("(жила %.1fc)", tick() - mapSpawnTick) or ""
+                Log(string.format("🧹 [КАРТА] ОЧИСТКА КАРТЫ: '%s' удалена из Workspace %s", child.Name, lifetime), "MAP")
+                if CurrentMapInstance == child then
+                    CurrentMapInstance = nil
+                    CurrentCoinContainer = nil
+                    LblCurrentMap.Text = "Карта: (нет)"
+                    LblCurrentMap.TextColor3 = Color3.fromRGB(180, 180, 180)
+                end
+            end
+        end)
+        table.insert(activeConnections, remConn)
+    end
+end
+
+-- Сканируем уже существующие карты в Workspace при запуске
+for _, ch in ipairs(Workspace:GetChildren()) do
+    InspectMapCandidate(ch)
+end
+
+-- Слушаем появление новых карт
+local wsAddConn = Workspace.ChildAdded:Connect(function(child)
+    if isTerminated then return end
+    task.defer(function()
+        InspectMapCandidate(child)
+    end)
+end)
+table.insert(activeConnections, wsAddConn)
+
+-- =====================================================================
+-- ТРЕКЕР ГОЛОСОВАНИЯ (LOBBY VOTEPADS)
+-- =====================================================================
+local isVotingActive = false
+local lastVoteOptions = ""
+
+local function CheckVotingState()
+    local lobby = Workspace:FindFirstChild("Lobby")
+    local votePadsFolder = lobby and lobby:FindFirstChild("VotePads")
+
+    if not votePadsFolder then
+        if isVotingActive then
+            isVotingActive = false
+            lastVoteOptions = ""
+            Log("🗳️ [ГОЛОСОВАНИЕ] VotePads исчезли — голосование окончено", "VOTE")
+            LblVoteStatus.Text = "Голосование: Окончено"
+            LblVoteStatus.TextColor3 = Color3.fromRGB(150, 150, 150)
+        end
+        return
     end
 
-    local pAddConn = Players.PlayerAdded:Connect(function(pl)
-        if not spyActive then return end
-        local cConn = pl.CharacterAdded:Connect(function(c)
-            if not spyActive then return end
-            task.wait(0.05)
-            HookPlayerForEquip(pl, c)
-        end)
-        table.insert(spyConnections, cConn)
-    end)
-    table.insert(spyConnections, pAddConn)
+    local currentMapNames = {}
+    local totalVotes = 0
 
-    -- 2. ГЛОБАЛЬНЫЙ ДЕТЕКТОР КИЛЛОВ: В момент смерти жертвы проверяем КТО ДЕРЖИТ НОЖ
-    local killEvent = FindRemoteEvent("KillEvent")
-    if killEvent then
-        local kConn = killEvent.OnClientEvent:Connect(function(victimName: any)
-            if not spyActive then return end
-            local victim = tostring(victimName or "Игрок")
-
-            -- Сканируем, у кого из игроков прямо сейчас в руках нож
-            local knifeHolders = {}
-            for _, pl in ipairs(Players:GetPlayers()) do
-                if pl.Character then
-                    for _, item in ipairs(pl.Character:GetChildren()) do
-                        if item:IsA("Tool") and (item.Name == "Knife" or string.find(string.lower(item.Name), "knife")) then
-                            table.insert(knifeHolders, pl.Name)
+    for _, pad in ipairs(votePadsFolder:GetChildren()) do
+        if pad:IsA("BasePart") or pad:IsA("Model") then
+            local infoGui = pad:FindFirstChild("VoteInfoGui", true)
+            if infoGui then
+                local mapName = nil
+                local votes = 0
+                for _, txt in ipairs(infoGui:GetDescendants()) do
+                    if txt:IsA("TextLabel") and txt.Text ~= "" and txt.Text ~= "Label" then
+                        local t = string.lower(txt.Text)
+                        if string.find(t, "votes:") then
+                            votes = tonumber(string.match(txt.Text, "%d+")) or 0
+                        else
+                            mapName = string.gsub(txt.Text, "^%s*(.-)%s*$", "%1")
                         end
                     end
                 end
-            end
-
-            local holdersText = #knifeHolders > 0 and table.concat(knifeHolders, ", ") or "НИ У КОГО (Скрытый нож / Рюкзак!)"
-            Log(string.format("💀 [КИЛЛ] Погиб: '%s' | С ножом в руках: %s", victim, holdersText), "FLASH")
-        end)
-        table.insert(spyConnections, kConn)
-    end
-
-    -- 3. СЕРВЕРНЫЙ ДЕТЕКТОР СБОРА МОНЕТ (PlayerDataChanged)
-    local playerDataChangedEvent = FindRemoteEvent("PlayerDataChanged")
-    if playerDataChangedEvent then
-        local pConn = playerDataChangedEvent.OnClientEvent:Connect(function(data: any)
-            if not spyActive or typeof(data) ~= "table" then return end
-            for pName, pInfo in pairs(data) do
-                if typeof(pInfo) == "table" and pInfo.Coins ~= nil then
-                    local currentCoins = tonumber(pInfo.Coins) or 0
-                    local prevCoins = spyPlayerCoins[tostring(pName)]
-                    if prevCoins and currentCoins > prevCoins then
-                        local gained = currentCoins - prevCoins
-                        Log(string.format("🪙 [МОНЕТЫ] %s подобрал +%d монету! (Всего: %d)", tostring(pName), gained, currentCoins), "SPY")
-                    end
-                    spyPlayerCoins[tostring(pName)] = currentCoins
+                if mapName and mapName ~= "" then
+                    table.insert(currentMapNames, string.format("%s (%d гол.)", mapName, votes))
+                    totalVotes = totalVotes + votes
                 end
             end
-        end)
-        table.insert(spyConnections, pConn)
+        end
     end
 
-    -- 4. СЛЕЖКА ЗА КООРДИНАТАМИ, ТЕЛЕПОРТАМИ И ПУСТОТОЙ
-    task.spawn(function()
-        while spyActive and not isTerminated do
-            task.wait(0.04)
+    if #currentMapNames > 0 then
+        table.sort(currentMapNames)
+        local optionsStr = table.concat(currentMapNames, " | ")
 
-            -- Если выбран конкретный игрок — следим за ним
-            -- Если нет — ищем читеров с аномальной скоростью среди всех
-            local targetsToCheck = {}
-            if spyTargetPlayer and spyTargetPlayer.Parent then
-                table.insert(targetsToCheck, spyTargetPlayer)
+        if not isVotingActive or optionsStr ~= lastVoteOptions then
+            if not isVotingActive then
+                Log(string.format("🗳️ [ГОЛОСОВАНИЕ] НАЧАЛОСЬ ГОЛОСОВАНИЕ ЗА КАРТЫ! Варианты: %s", optionsStr), "VOTE")
             else
-                for _, pl in ipairs(Players:GetPlayers()) do
-                    if pl ~= LocalPlayer then table.insert(targetsToCheck, pl) end
-                end
+                Log(string.format("🗳️ [ГОЛОСОВАНИЕ: ОБНОВЛЕНИЕ] %s (Всего голосов: %d)", optionsStr, totalVotes), "VOTE")
             end
-
-            for _, pl in ipairs(targetsToCheck) do
-                local char = pl.Character
-                local hrp = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
-                if hrp and hrp.Parent then
-                    local currentPos = hrp.Position
-                    local now = tick()
-
-                    -- Проверка нахождения ПОД КАРТОЙ
-                    if currentPos.Y < -20 then
-                        if pl == spyTargetPlayer and not spyIsUnderMap then
-                            spyIsUnderMap = true
-                            Log(string.format("🕳️ [SPY-VOID] %s УШЁЛ ПОД КАРТУ! Y = %.1f (Неуязвим)", pl.Name, currentPos.Y), "TP")
-                        end
-                    else
-                        if pl == spyTargetPlayer and spyIsUnderMap then
-                            spyIsUnderMap = false
-                            Log(string.format("⬆️ [SPY-VOID] %s вернулся на карту (Y = %.1f)", pl.Name, currentPos.Y), "SPY")
-                        end
-                    end
-
-                    -- Проверка телепорта (сдвиг более 25 студов за 40 мс)
-                    if pl == spyTargetPlayer and spyLastPos then
-                        local dt = math.max(0.001, now - spyLastPosTick)
-                        local dist = (currentPos - spyLastPos).Magnitude
-                        local speed = dist / dt
-                        if dist > 20 and speed > 350 then
-                            Log(string.format("🚀 [SPY-TP] %s ТЕЛЕПОРТ! Сдвиг на %.1f ст (Скорость: %.0f ст/с)", pl.Name, dist, speed), "TP")
-                        end
-                    end
-
-                    if pl == spyTargetPlayer then
-                        spyLastPos = currentPos
-                        spyLastPosTick = now
-                    end
-                end
-            end
+            isVotingActive = true
+            lastVoteOptions = optionsStr
+            LblVoteStatus.Text = "Голосование: ИДЁТ (" .. #currentMapNames .. " карт)"
+            LblVoteStatus.TextColor3 = Color3.fromRGB(180, 120, 255)
         end
-    end)
-end
-
--- Авто-поиск подозрительного читера
-local function AutoDetectCheater()
-    Log("--- АВТО-СКАНИРОВАНИЕ НА ЧИТЕРОВ ---", "SPY")
-    local candidates = {}
-
-    -- 1. Сначала ищем по известным никам читеров
-    local knownCheaters = { "thunderpro1014", "feraltide17" }
-    for _, name in ipairs(knownCheaters) do
-        local pl = Players:FindFirstChild(name) or FindPlayerByName(name)
-        if pl and pl ~= LocalPlayer then
-            table.insert(candidates, { player = pl, reason = "Известный читер из логов" })
-        end
-    end
-
-    -- 2. Сканируем аномалии у остальных игроков
-    for _, pl in ipairs(Players:GetPlayers()) do
-        if pl ~= LocalPlayer then
-            local char = pl.Character
-            local hrp = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
-            if hrp then
-                if hrp.Position.Y < -20 then
-                    table.insert(candidates, { player = pl, reason = string.format("Летает под картой (Y: %.1f)", hrp.Position.Y) })
-                elseif hrp.Position.Y > 120 then
-                    table.insert(candidates, { player = pl, reason = string.format("Парит высоко в небе (Y: %.1f)", hrp.Position.Y) })
-                end
-            end
-        end
-    end
-
-    if #candidates > 0 then
-        local chosen = candidates[1]
-        SpyInput.Text = chosen.player.Name
-        Log(string.format("🎯 НАЙДЕН ЧИТЕР: %s (@%s) [%s]", chosen.player.DisplayName, chosen.player.Name, chosen.reason), "FLASH")
-        StartSpy(chosen.player)
     else
-        Log("Подозрительных игроков под картой не найдено. Запускаем слежку за ВСЕМ сервером!", "WARN")
-        StartSpy(nil)
+        if isVotingActive then
+            isVotingActive = false
+            Log(string.format("🏁 [ГОЛОСОВАНИЕ] ГОЛОСОВАНИЕ ЗАВЕРШЕНО! Панели скрыты сервером. Выбор карты...", lastVoteOptions), "VOTE")
+            lastVoteOptions = ""
+            LblVoteStatus.Text = "Голосование: Выбор завершен!"
+            LblVoteStatus.TextColor3 = Color3.fromRGB(100, 255, 120)
+        end
     end
 end
 
--- Привязка кнопок
-BtnScan.MouseButton1Click:Connect(RunTargetScan)
-BtnEquip.MouseButton1Click:Connect(function()
-    local knife = InspectAndEquipKnife()
-    if knife then
-        Log("Нож готов: " .. knife.Name, "SUCCESS")
-        UpdateStatus("Нож в руке: " .. knife.Name, Color3.fromRGB(100, 255, 100))
+-- Поллинг голосования раз в 0.5с (нагрузка 0%)
+task.spawn(function()
+    while not isTerminated do
+        task.wait(0.5)
+        CheckVotingState()
     end
 end)
-BtnInspect.MouseButton1Click:Connect(InspectAssassinData)
-BtnSingle.MouseButton1Click:Connect(RunSingleTargetKill)
-BtnKill.MouseButton1Click:Connect(StartKillLoop)
-BtnClear.MouseButton1Click:Connect(function()
-    ClearLogs()
-    table.clear(rawLogLines)
-end)
-BtnRemoteSniffer.MouseButton1Click:Connect(StartSniffer)
-BtnCopyLog.MouseButton1Click:Connect(ExportLog)
-BtnTestRF.MouseButton1Click:Connect(RunTestEliminate)
-BtnSpyToggle.MouseButton1Click:Connect(function()
-    if spyActive then
-        StopSpy()
-    else
-        local text = SpyInput.Text
-        local clean = CleanNickname(text)
-        if clean == "" then
-            Log("Введите ник читера в поле слева!", "WARN")
-            UpdateStatus("Введите ник читера", Color3.fromRGB(255, 180, 50))
-            return
-        end
-        local plr = FindPlayerByName(clean)
-        if not plr then
-            Log("Игрок с ником '" .. clean .. "' не найден!", "ERROR")
-            UpdateStatus("Игрок не найден", Color3.fromRGB(255, 80, 80))
-            return
-        end
-        StartSpy(plr)
-    end
-end)
-BtnFindCheater.MouseButton1Click:Connect(AutoDetectCheater)
-ToggleBtn.MouseButton1Click:Connect(function() SetLogsCollapsed(not isLogsCollapsed) end)
 
+-- =====================================================================
+-- ТРЕКЕР СОСТОЯНИЯ LOCALPLAYER (Атрибуты, здоровье, спавн)
+-- =====================================================================
+local function UpdateLocalPlayerDisplay()
+    local isAlive = LocalPlayer:GetAttribute("Alive") == true
+    local isElite = LocalPlayer:GetAttribute("Elite") == true
+    local char = LocalPlayer.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local hp = hum and math.floor(hum.Health) or 0
+    local myRole = PlayerRolesCache[LocalPlayer.Name] or "None"
+
+    LblLocalPlayerStatus.Text = string.format("Игрок: Alive=%s | Elite=%s | HP=%d | Роль: %s", 
+        tostring(isAlive), tostring(isElite), hp, myRole)
+end
+
+local attrConn = LocalPlayer.AttributeChanged:Connect(function(attrName)
+    local val = LocalPlayer:GetAttribute(attrName)
+    Log(string.format("👤 [ИГРОК: АТРИБУТ] LocalPlayer изменил атрибут '%s' = %s", attrName, tostring(val)), "PLAYER")
+    UpdateLocalPlayerDisplay()
+end)
+table.insert(activeConnections, attrConn)
+
+local charRemConn = LocalPlayer.CharacterRemoving:Connect(function()
+    Log("💀 [ИГРОК] Персонаж удаляется из игры (Смерть / Сброс / Респавн)", "PLAYER")
+    UpdateLocalPlayerDisplay()
+end)
+table.insert(activeConnections, charRemConn)
+
+local charAddConn = LocalPlayer.CharacterAdded:Connect(function(newChar)
+    Log("✨ [ИГРОК] Заспавнился новый Character LocalPlayer", "PLAYER")
+    task.wait(0.2)
+    UpdateLocalPlayerDisplay()
+
+    local hum = newChar:WaitForChild("Humanoid", 5)
+    if hum and hum:IsA("Humanoid") then
+        local dConn = hum.Died:Connect(function()
+            Log("☠️ [ИГРОК] Humanoid.Died сработал у LocalPlayer!", "PLAYER")
+            UpdateLocalPlayerDisplay()
+        end)
+        table.insert(activeConnections, dConn)
+    end
+end)
+table.insert(activeConnections, charAddConn)
+
+-- Инициализация Humanoid текущего персонажа
+if LocalPlayer.Character then
+    local curHum = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+    if curHum then
+        local dConn = curHum.Died:Connect(function()
+            Log("☠️ [ИГРОК] Humanoid.Died сработал у LocalPlayer!", "PLAYER")
+            UpdateLocalPlayerDisplay()
+        end)
+        table.insert(activeConnections, dConn)
+    end
+end
+UpdateLocalPlayerDisplay()
+
+-- =====================================================================
+-- ЗАКРЫТИЕ И ОЧИСТКА
+-- =====================================================================
 local function Terminate()
     if isTerminated then return end
     isTerminated = true
-    isRunning = false
-
-    StopKillLoop()
-    if snifferActive then StopSniffer() end
-    if spyActive then StopSpy() end
 
     for _, conn in ipairs(activeConnections) do
         if conn and conn.Connected then pcall(function() conn:Disconnect() end) end
@@ -1396,14 +864,12 @@ local function Terminate()
     table.clear(activeConnections)
 
     if ScreenGui and ScreenGui.Parent then ScreenGui:Destroy() end
-    print("[MM2 ASSASSIN] Скрипт закрыт.")
+    print("[MM2 Round Monitor] Скрипт закрыт, все соединения отключены.")
 end
 
 CloseBtn.MouseButton1Click:Connect(Terminate)
 
-Log("MM2 Assassin Turbo v7.0 [NETWORK TURBO + CHEATER SPY] готов!", "SUCCESS")
-Log("1. 🕵️ СЛЕЖКА ЗА ЧИТЕРОМ: введи ник или нажми '⚡ НАЙТИ ЧИТЕРА (АВТО)'.", "SPY")
-Log("2. Фиксирует Flash-Equip (доставание ножа на 10-50 мс, невидимое глазу).", "FLASH")
-Log("3. Фиксирует телепорты рывками и уход в пустоту под карту.", "TP")
-Log("4. Отслеживает сбор монет и привязку убийств к читеру.", "INFO")
-Log("• Для авто-килла используйте кнопку '⚡ ТУРБО-ЦЕПОЧКА'!", "KILL")
+-- Приветственные логи
+Log("🛰 Скрипт мониторинга раундов MM2 запущен!", "INFO")
+Log("Отслеживаются: спавн/очистка карты, спавн монет, фазы голосования, сетевые ремоуты (RoleSelect, RoundStart, RoundEndFade, PlayerDataChanged).", "INFO")
+Log("Нажмите '💾 ЭКСПОРТ ЛОГА' или '📋 СКОПИРОВАТЬ', когда запишется раунд.", "DATA")
