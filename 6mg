@@ -1981,6 +1981,33 @@ local function GetMapPriority(mapName)
     return 999
 end
 
+-- Получение реального количества голосов с информационного стенда MM2
+local function GetServerVotes(mapName: string): number
+    local lobby = Workspace:FindFirstChild("Lobby")
+    local votePadsFolder = lobby and lobby:FindFirstChild("VotePads")
+    if not votePadsFolder then return 0 end
+    for _, pad in ipairs(votePadsFolder:GetChildren()) do
+        local gui = pad:FindFirstChild("VoteInfoGui", true)
+        if gui then
+            local isTarget = false
+            local votes = 0
+            for _, txt in ipairs(gui:GetDescendants()) do
+                if txt:IsA("TextLabel") and txt.Visible then
+                    local clean = string.gsub(txt.Text, "^%s*(.-)%s*$", "%1")
+                    if string.lower(clean) == string.lower(mapName) then
+                        isTarget = true
+                    elseif string.find(string.lower(clean), "votes") then
+                        local n = tonumber(string.match(clean, "%d+"))
+                        if n then votes = n end
+                    end
+                end
+            end
+            if isTarget then return votes end
+        end
+    end
+    return 0
+end
+
 local function ScanVotePads()
     local currentMaps = {}
     local lobby = Workspace:FindFirstChild("Lobby")
@@ -2032,8 +2059,12 @@ local function ScanVotePads()
                     table.insert(allNames, mapName)
                     local tpPart = pad:IsA("BasePart") and pad or (pad:IsA("Model") and (pad.PrimaryPart or pad:FindFirstChildWhichIsA("BasePart"))) or pad:FindFirstChildWhichIsA("BasePart")
                     if tpPart then
-                        -- Точный CFrame зоны Pad (HRP на Y=466.5, прямо в центре рабочей зоны детектора)
-                        currentMaps[mapName] = tpPart.CFrame + Vector3.new(0, 1.0, 0)
+                        -- Горизонтальная позиция под полом (лежа плашмя):
+                        -- Наклон 90 градусов: толщина по вертикали Y составляет всего ~1 студ (толщина торса).
+                        -- Смещение -1.2 студа укладывает тело точно под пол лобби, оставаясь внутри хитбокса Pad (Y=464.3).
+                        local underCFrame = tpPart.CFrame * CFrame.new(0, -1.2, 0) * CFrame.Angles(math.rad(90), 0, 0)
+                        local surfCFrame = tpPart.CFrame * CFrame.new(0, 0.8, 0) * CFrame.Angles(math.rad(90), 0, 0)
+                        currentMaps[mapName] = { under = underCFrame, surface = surfCFrame }
                     end
                 end
             end
@@ -2091,21 +2122,23 @@ task.spawn(function()
         for name, _ in pairs(availableMaps) do table.insert(mapNames, name) end
         if #mapNames < 2 then continue end
 
-        local bestMap, bestPriority, bestCFrame = nil, 999, nil
-        for name, tpCFrame in pairs(availableMaps) do
+        local bestMap, bestPriority, bestData = nil, 999, nil
+        for name, data in pairs(availableMaps) do
             local priority = GetMapPriority(name)
             if priority < bestPriority then
                 bestPriority = priority
                 bestMap = name
-                bestCFrame = tpCFrame
+                bestData = data
             end
         end
 
-        if bestMap and bestPriority < 999 and bestCFrame then
+        if bestMap and bestPriority < 999 and bestData then
             UpdateStatus("Голос: Старт накрутки (" .. bestMap .. ")", Color3.fromRGB(50, 255, 255))
 
             local voteCount = 0
             local MAX_VOTES = 11
+            local initialServerVotes = GetServerVotes(bestMap)
+            local targetCFrame = bestData.under -- Сначала пробуем горизонтально под полом
             isVotingNoclip = true
 
             while voteCount < MAX_VOTES and not IsTerminated and SETTINGS.AutoVoteEnabled do
@@ -2133,30 +2166,47 @@ task.spawn(function()
                     continue
                 end
 
-                -- Отключаем коллизию, чтобы не толкать других игроков
+                -- Отключаем коллизию, чтобы персонаж не выталкивался сквозь текстуры
                 updateBodyPartsCache()
                 for _, part in ipairs(rt.cachedBodyParts) do
                     if part and part.Parent then part.CanCollide = false end
                 end
 
-                -- Зависаем в воздухе без падения (BodyVelocity вместо Anchored, чтобы НЕ ломать репликацию на сервер)
+                -- Зависаем в воздухе лежа плашмя (BodyVelocity + BodyGyro)
+                -- Персонаж остается Unanchored, поэтому Roblox полностью передает координаты серверу!
                 local holdV = hrp:FindFirstChild("VoteHover") or Instance.new("BodyVelocity")
                 holdV.Name = "VoteHover"
                 holdV.Velocity = Vector3.zero
-                holdV.MaxForce = Vector3.new(0, 9e9, 0)
+                holdV.MaxForce = Vector3.new(9e9, 9e9, 9e9)
                 holdV.Parent = hrp
+
+                local holdG = hrp:FindFirstChild("VoteGyro") or Instance.new("BodyGyro")
+                holdG.Name = "VoteGyro"
+                holdG.CFrame = targetCFrame
+                holdG.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+                holdG.Parent = hrp
 
                 hrp.AssemblyLinearVelocity = Vector3.zero
                 hrp.AssemblyAngularVelocity = Vector3.zero
-                char:PivotTo(bestCFrame)
+                char:PivotTo(targetCFrame)
 
                 voteCount = voteCount + 1
-                UpdateStatus(string.format("Голос: [%s] (%d/%d)", bestMap, voteCount, MAX_VOTES), Color3.fromRGB(50, 255, 255))
+                local sVotes = GetServerVotes(bestMap)
+                UpdateStatus(string.format("Голос: [%s] (%d/%d) [Стенд: %d]", bestMap, voteCount, MAX_VOTES, sVotes), Color3.fromRGB(50, 255, 255))
 
-                -- Пауза для гарантированного подтверждения координат сервером MM2
+                -- Пауза для подтверждения координат сервером MM2
                 task.wait(0.18)
 
                 if holdV and holdV.Parent then holdV:Destroy() end
+                if holdG and holdG.Parent then holdG:Destroy() end
+
+                -- Авто-адаптация: если за 2 попытки серверный счетчик на стенде не вырос,
+                -- значит сервер требует торс над полом -> поднимаемся на уровень пола плашмя
+                local newSVotes = GetServerVotes(bestMap)
+                if voteCount >= 2 and newSVotes == initialServerVotes and targetCFrame == bestData.under then
+                    targetCFrame = bestData.surface
+                    UpdateStatus("Голос: Коррекция высоты на поверхность", Color3.fromRGB(255, 200, 50))
+                end
 
                 if rt:CheckIfGameInProgress() or not SETTINGS.AutoVoteEnabled then
                     break
