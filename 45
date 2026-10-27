@@ -69,7 +69,7 @@ MainFrame.Position = UDim2.new(0.04, 0, 0.15, 0)
 MainFrame.BackgroundColor3 = Color3.fromRGB(16, 17, 24)
 MainFrame.BorderSizePixel = 0
 MainFrame.Active = true
-MainFrame.ClipsDescendants = true
+MainFrame.ClipsDescendants = false
 MainFrame.Parent = ScreenGui
 Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
 
@@ -87,7 +87,7 @@ TitleBar.Parent = MainFrame
 Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 10)
 
 local TitleLabel = Instance.new("TextLabel")
-TitleLabel.Size = UDim2.new(1, -70, 1, 0)
+TitleLabel.Size = UDim2.new(1, -118, 1, 0)
 TitleLabel.Position = UDim2.new(0, 10, 0, 0)
 TitleLabel.BackgroundTransparency = 1
 TitleLabel.Text = "🛰 MM2 ROUND & STATE MONITOR v1.0"
@@ -96,6 +96,22 @@ TitleLabel.Font = Enum.Font.GothamBold
 TitleLabel.TextSize = 12
 TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
 TitleLabel.Parent = TitleBar
+
+-- Кнопка разворачивания панели участников справа
+local PlayersBtn = Instance.new("TextButton")
+PlayersBtn.Size = UDim2.new(0, 26, 0, 22)
+PlayersBtn.Position = UDim2.new(1, -85, 0, 5)
+PlayersBtn.BackgroundColor3 = Color3.fromRGB(45, 55, 80)
+PlayersBtn.Text = "👥"
+PlayersBtn.TextColor3 = Color3.new(1, 1, 1)
+PlayersBtn.Font = Enum.Font.GothamBold
+PlayersBtn.TextSize = 12
+PlayersBtn.Parent = TitleBar
+Instance.new("UICorner", PlayersBtn).CornerRadius = UDim.new(0, 5)
+
+local PlayersBtnStroke = Instance.new("UIStroke", PlayersBtn)
+PlayersBtnStroke.Color = Color3.fromRGB(65, 85, 125)
+PlayersBtnStroke.Thickness = 1
 
 local ToggleBtn = Instance.new("TextButton")
 ToggleBtn.Size = UDim2.new(0, 24, 0, 22)
@@ -271,6 +287,110 @@ end
 
 ToggleBtn.MouseButton1Click:Connect(function()
     SetLogsCollapsed(not isLogsCollapsed)
+end)
+
+-- =====================================================================
+-- БОКОВАЯ ПАНЕЛЬ УЧАСТНИКОВ РАУНДА (СПРАВА)
+-- =====================================================================
+local PlayersSideFrame = Instance.new("Frame")
+PlayersSideFrame.Name = "PlayersSideFrame"
+PlayersSideFrame.Size = UDim2.new(0, 240, 1, 0)
+PlayersSideFrame.Position = UDim2.new(1, 8, 0, 0)
+PlayersSideFrame.BackgroundColor3 = Color3.fromRGB(16, 17, 24)
+PlayersSideFrame.BorderSizePixel = 0
+PlayersSideFrame.Visible = false
+PlayersSideFrame.Parent = MainFrame
+Instance.new("UICorner", PlayersSideFrame).CornerRadius = UDim.new(0, 10)
+
+local PlayersSideStroke = Instance.new("UIStroke", PlayersSideFrame)
+PlayersSideStroke.Color = Color3.fromRGB(50, 60, 85)
+PlayersSideStroke.Thickness = 1.2
+
+-- Заголовок панели игроков
+local PlayersTitleBar = Instance.new("Frame")
+PlayersTitleBar.Name = "PlayersTitleBar"
+PlayersTitleBar.Size = UDim2.new(1, 0, 0, 32)
+PlayersTitleBar.BackgroundColor3 = Color3.fromRGB(24, 26, 38)
+PlayersTitleBar.BorderSizePixel = 0
+PlayersTitleBar.Parent = PlayersSideFrame
+Instance.new("UICorner", PlayersTitleBar).CornerRadius = UDim.new(0, 10)
+
+local PlayersTitleLabel = Instance.new("TextLabel")
+PlayersTitleLabel.Size = UDim2.new(1, -36, 1, 0)
+PlayersTitleLabel.Position = UDim2.new(0, 10, 0, 0)
+PlayersTitleLabel.BackgroundTransparency = 1
+PlayersTitleLabel.Text = "👥 ИГРОКИ В РАУНДЕ"
+PlayersTitleLabel.TextColor3 = Color3.fromRGB(120, 220, 255)
+PlayersTitleLabel.Font = Enum.Font.GothamBold
+PlayersTitleLabel.TextSize = 11
+PlayersTitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+PlayersTitleLabel.Parent = PlayersTitleBar
+
+local PlayersCloseBtn = Instance.new("TextButton")
+PlayersCloseBtn.Size = UDim2.new(0, 22, 0, 22)
+PlayersCloseBtn.Position = UDim2.new(1, -27, 0, 5)
+PlayersCloseBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 60)
+PlayersCloseBtn.Text = "✕"
+PlayersCloseBtn.TextColor3 = Color3.new(1, 1, 1)
+PlayersCloseBtn.Font = Enum.Font.GothamBold
+PlayersCloseBtn.TextSize = 10
+PlayersCloseBtn.Parent = PlayersTitleBar
+Instance.new("UICorner", PlayersCloseBtn).CornerRadius = UDim.new(0, 5)
+
+-- Сводка (счетчик живых/всего)
+local PlayersSummaryFrame = Instance.new("Frame")
+PlayersSummaryFrame.Size = UDim2.new(1, -12, 0, 22)
+PlayersSummaryFrame.Position = UDim2.new(0, 6, 0, 36)
+PlayersSummaryFrame.BackgroundColor3 = Color3.fromRGB(22, 24, 34)
+PlayersSummaryFrame.BorderSizePixel = 0
+PlayersSummaryFrame.Parent = PlayersSideFrame
+Instance.new("UICorner", PlayersSummaryFrame).CornerRadius = UDim.new(0, 5)
+
+local LblPlayersSummary = Instance.new("TextLabel")
+LblPlayersSummary.Size = UDim2.new(1, -8, 1, 0)
+LblPlayersSummary.Position = UDim2.new(0, 4, 0, 0)
+LblPlayersSummary.BackgroundTransparency = 1
+LblPlayersSummary.Text = "В лобби: раунд не начат"
+LblPlayersSummary.TextColor3 = Color3.fromRGB(160, 160, 180)
+LblPlayersSummary.Font = Enum.Font.GothamSemibold
+LblPlayersSummary.TextSize = 10
+LblPlayersSummary.TextXAlignment = Enum.TextXAlignment.Center
+LblPlayersSummary.Parent = PlayersSummaryFrame
+
+-- Список игроков (ScrollingFrame)
+local PlayersScroll = Instance.new("ScrollingFrame")
+PlayersScroll.Size = UDim2.new(1, -12, 1, -66)
+PlayersScroll.Position = UDim2.new(0, 6, 0, 62)
+PlayersScroll.BackgroundTransparency = 1
+PlayersScroll.BorderSizePixel = 0
+PlayersScroll.ScrollBarThickness = 3
+PlayersScroll.ScrollBarImageColor3 = Color3.fromRGB(80, 95, 130)
+PlayersScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+PlayersScroll.Parent = PlayersSideFrame
+
+local PlayersLayout = Instance.new("UIListLayout")
+PlayersLayout.SortOrder = Enum.SortOrder.LayoutOrder
+PlayersLayout.Padding = UDim.new(0, 3)
+PlayersLayout.Parent = PlayersScroll
+
+local isPlayersPanelOpen = false
+local UpdatePlayersPanel: () -> () = function() end
+
+local function SetPlayersPanelOpen(open: boolean)
+    isPlayersPanelOpen = open
+    PlayersSideFrame.Visible = open
+    PlayersBtn.BackgroundColor3 = open and Color3.fromRGB(40, 120, 190) or Color3.fromRGB(45, 55, 80)
+    if open then
+        UpdatePlayersPanel()
+    end
+end
+
+PlayersBtn.MouseButton1Click:Connect(function()
+    SetPlayersPanelOpen(not isPlayersPanelOpen)
+end)
+
+PlayersCloseBtn.MouseButton1Click:Connect(function()
+    SetPlayersPanelOpen(false)
 end)
 
 -- =====================================================================
@@ -509,6 +629,7 @@ RegisterRemoteHook("RoundStart", function(...)
             end
         end
         UpdateLocalPlayerDisplay()
+        UpdatePlayersPanel()
     end
 end)
 
@@ -517,12 +638,25 @@ RegisterRemoteHook("RoundEndFade", function(...)
     Log(string.format("🏁 [RoundEndFade] СЕРВЕР ОБЪЯВИЛ КОНЕЦ РАУНДА! Параметры: %s", SerializeArgs(...)), "ROUND")
     LblRoundStatus.Text = "Раунд: ЗАВЕРШЁН (Конец)"
     LblRoundStatus.TextColor3 = Color3.fromRGB(255, 100, 100)
+    currentAssassinTarget = nil
+    UpdateLocalPlayerDisplay()
+    UpdatePlayersPanel()
 end)
 
 -- 4. ChangeTarget: Система таргетов Assassin
+local currentAssassinTarget: string? = nil
+
 RegisterRemoteHook("ChangeTarget", function(targetName: any, targetKnife: any, targetGun: any, targetUserId: any)
-    Log(string.format("🎯 [ChangeTarget] Цель: '%s' | Нож: %s | Оружие: %s | UserId: %s", 
-        tostring(targetName), tostring(targetKnife), tostring(targetGun), tostring(targetUserId)), "ROUND")
+    local tName = tostring(targetName)
+    local isNew = (tName ~= currentAssassinTarget)
+    currentAssassinTarget = tName
+
+    if isNew then
+        Log(string.format("🎯 [ChangeTarget: НОВАЯ ЦЕЛЬ] '%s' | Нож: %s | Оружие: %s | UserId: %s", 
+            tName, tostring(targetKnife), tostring(targetGun), tostring(targetUserId)), "ROUND")
+    else
+        Log(string.format("🎯 [ChangeTarget: ПОДТВЕРЖДЕНИЕ] Цель не изменилась: '%s' (сервер обновил таргеты после чьей-то смерти)", tName), "ROUND")
+    end
 end)
 
 -- 5. GiveWeapon: Сервер выдал оружие игроку
@@ -533,6 +667,11 @@ end)
 -- 6. KillEvent: Смерть участника
 RegisterRemoteHook("KillEvent", function(victimName: any, ...)
     Log(string.format("💀 [KillEvent] Погиб игрок: '%s' | Доп. данные: %s", tostring(victimName), SerializeArgs(...)), "KILL")
+    if victimName then
+        PlayerAliveCache[tostring(victimName)] = true
+        UpdateLocalPlayerDisplay()
+        UpdatePlayersPanel()
+    end
 end)
 
 -- 7. SpecialXPEvent: Начисление опыта
@@ -605,6 +744,7 @@ RegisterRemoteHook("PlayerDataChanged", function(data: any)
     end
 
     UpdateLocalPlayerDisplay()
+    UpdatePlayersPanel()
 
     -- Если пришёл пустой словарь {} — это сброс состояния между раундами!
     if countPlayers == 0 then
@@ -613,6 +753,7 @@ RegisterRemoteHook("PlayerDataChanged", function(data: any)
         table.clear(PlayerRolesCache)
         table.clear(PlayerAliveCache)
         UpdateLocalPlayerDisplay()
+        UpdatePlayersPanel()
     end
 end)
 
@@ -701,6 +842,8 @@ local function CleanupMap(child: Instance)
         mapSpawnTick = 0
         LblCurrentMap.Text = "Карта: (нет)"
         LblCurrentMap.TextColor3 = Color3.fromRGB(180, 180, 180)
+        UpdateLocalPlayerDisplay()
+        UpdatePlayersPanel()
     end
 end
 
@@ -790,6 +933,28 @@ local function GetWorkspaceMap(): Instance?
         end
     end
     return nil
+end
+
+-- =====================================================================
+-- УНИВЕРСАЛЬНАЯ ПРОВЕРКА НАХОЖДЕНИЯ В РАУНДЕ
+-- =====================================================================
+local function IsPlayerAliveInRound(plr: Player?): boolean
+    local player = plr or LocalPlayer
+    -- 1. Карта раунда должна быть в Workspace (не в лобби)
+    if not GetWorkspaceMap() then return false end
+
+    -- 2. Физический персонаж должен существовать и иметь здоровье
+    local char = player.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return false end
+
+    -- 3. Серверная проверка: игрок участник раунда и не мертв
+    if PlayerAliveCache[player.Name] == false then
+        return true
+    end
+
+    -- Резерв для классических режимов
+    return player:GetAttribute("Alive") == true
 end
 
 -- Сканируем уже существующие карты в Workspace при запуске
@@ -1038,11 +1203,123 @@ local function DoUpdateLocalPlayerDisplay()
     local myCoins = PlayerCoinsCache[LocalPlayer.Name] or 0
     local isDeadServer = PlayerAliveCache[LocalPlayer.Name]
     local serverDeadStr = isDeadServer == nil and "?" or tostring(isDeadServer)
+    local inRoundAlive = IsPlayerAliveInRound(LocalPlayer)
 
-    LblLocalPlayerStatus.Text = string.format("Игрок: Alive=%s | Dead=%s | HP:%d | %s | Монеты(Server): %d", 
-        tostring(isAlive), serverDeadStr, hp, myRole, myCoins)
+    LblLocalPlayerStatus.Text = string.format("Игрок: ВРаунде=%s | Alive=%s | Dead=%s | HP:%d | %s | 🪙%d", 
+        tostring(inRoundAlive), tostring(isAlive), serverDeadStr, hp, myRole, myCoins)
 end
 UpdateLocalPlayerDisplay = DoUpdateLocalPlayerDisplay
+
+local function DoUpdatePlayersPanel()
+    if not PlayersSideFrame.Visible then return end
+
+    -- Очищаем старые плашки
+    for _, child in ipairs(PlayersScroll:GetChildren()) do
+        if child:IsA("Frame") then child:Destroy() end
+    end
+
+    local totalInRound = 0
+    local aliveCount = 0
+    local deadCount = 0
+
+    local participantNames = {}
+    for pName, _ in pairs(PlayerAliveCache) do
+        table.insert(participantNames, pName)
+    end
+
+    if #participantNames == 0 then
+        LblPlayersSummary.Text = "В лобби: раунд не начат"
+        LblPlayersSummary.TextColor3 = Color3.fromRGB(160, 160, 180)
+        return
+    end
+
+    -- Сортировка: сначала живые, затем мертвые; LocalPlayer всегда первый
+    table.sort(participantNames, function(a, b)
+        if a == LocalPlayer.Name then return true end
+        if b == LocalPlayer.Name then return false end
+        local aDead = PlayerAliveCache[a] == true
+        local bDead = PlayerAliveCache[b] == true
+        if aDead ~= bDead then
+            return not aDead
+        end
+        return string.lower(a) < string.lower(b)
+    end)
+
+    for idx, pName in ipairs(participantNames) do
+        totalInRound = totalInRound + 1
+        local isDead = PlayerAliveCache[pName] == true
+        if isDead then
+            deadCount = deadCount + 1
+        else
+            aliveCount = aliveCount + 1
+        end
+
+        local role = PlayerRolesCache[pName] or "None"
+        local coins = PlayerCoinsCache[pName] or 0
+        local isMe = (pName == LocalPlayer.Name)
+
+        local card = Instance.new("Frame")
+        card.Size = UDim2.new(1, -4, 0, 32)
+        card.BackgroundColor3 = isMe and Color3.fromRGB(24, 38, 52) or Color3.fromRGB(20, 22, 30)
+        card.BorderSizePixel = 0
+        card.LayoutOrder = idx
+        card.Parent = PlayersScroll
+        Instance.new("UICorner", card).CornerRadius = UDim.new(0, 5)
+
+        local stroke = Instance.new("UIStroke", card)
+        stroke.Thickness = 1
+        stroke.Color = isMe and Color3.fromRGB(60, 140, 200) or (isDead and Color3.fromRGB(50, 40, 45) or Color3.fromRGB(45, 65, 50))
+
+        -- Иконка статуса
+        local statusIcon = Instance.new("TextLabel")
+        statusIcon.Size = UDim2.new(0, 18, 1, 0)
+        statusIcon.Position = UDim2.new(0, 4, 0, 0)
+        statusIcon.BackgroundTransparency = 1
+        statusIcon.Text = isDead and "💀" or "🟢"
+        statusIcon.TextSize = 11
+        statusIcon.Parent = card
+
+        -- Имя игрока
+        local nameLabel = Instance.new("TextLabel")
+        nameLabel.Size = UDim2.new(1, -26, 0, 14)
+        nameLabel.Position = UDim2.new(0, 24, 0, 2)
+        nameLabel.BackgroundTransparency = 1
+        nameLabel.Text = pName .. (isMe and " (ВЫ)" or "")
+        nameLabel.TextColor3 = isDead and Color3.fromRGB(150, 150, 150) or (isMe and Color3.fromRGB(100, 220, 255) or Color3.fromRGB(235, 235, 245))
+        nameLabel.Font = Enum.Font.GothamBold
+        nameLabel.TextSize = 10
+        nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+        nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+        nameLabel.Parent = card
+
+        -- Роль и монеты
+        local roleColor = Color3.fromRGB(170, 170, 180)
+        if role == "Murderer" or role == "Zombie" then
+            roleColor = Color3.fromRGB(255, 90, 90)
+        elseif role == "Sheriff" or role == "Hero" then
+            roleColor = Color3.fromRGB(90, 160, 255)
+        elseif role == "Assassin" then
+            roleColor = Color3.fromRGB(255, 170, 70)
+        elseif role == "Survivor" or role == "Innocent" then
+            roleColor = Color3.fromRGB(100, 230, 130)
+        end
+
+        local subLabel = Instance.new("TextLabel")
+        subLabel.Size = UDim2.new(1, -26, 0, 12)
+        subLabel.Position = UDim2.new(0, 24, 0, 16)
+        subLabel.BackgroundTransparency = 1
+        subLabel.Text = string.format("%s | 🪙 %d", role, coins)
+        subLabel.TextColor3 = roleColor
+        subLabel.Font = Enum.Font.Gotham
+        subLabel.TextSize = 9
+        subLabel.TextXAlignment = Enum.TextXAlignment.Left
+        subLabel.Parent = card
+    end
+
+    LblPlayersSummary.Text = string.format("Живых: %d | Погибло: %d | Всего: %d", aliveCount, deadCount, totalInRound)
+    LblPlayersSummary.TextColor3 = aliveCount > 0 and Color3.fromRGB(100, 255, 150) or Color3.fromRGB(255, 100, 100)
+end
+UpdatePlayersPanel = DoUpdatePlayersPanel
 
 local attrConn = LocalPlayer.AttributeChanged:Connect(function(attrName)
     local val = LocalPlayer:GetAttribute(attrName)
