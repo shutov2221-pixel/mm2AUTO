@@ -1,5 +1,5 @@
 -- Настройка: интервал перезахода (секунды)
-local REJOIN_TIME = 7200
+local REJOIN_TIME = 4
 
 local TeleportService = game:GetService("TeleportService")
 local Players = game:GetService("Players")
