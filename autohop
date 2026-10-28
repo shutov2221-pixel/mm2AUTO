@@ -1,0 +1,38 @@
+-- ═══════════════════════════════════════════════════════════
+--  НАСТРОЙКА: время до перезахода в СЕКУНДАХ (меняй только здесь)
+-- ═══════════════════════════════════════════════════════════
+local REJOIN_TIME_SECONDS = 10  -- 7200 сек = 2 часа
+-- ═══════════════════════════════════════════════════════════
+
+local TeleportService = game:GetService("TeleportService")
+local Players = game:GetService("Players")
+
+local LocalPlayer = Players.LocalPlayer
+if not LocalPlayer then
+    Players:GetPropertyChangedSignal("LocalPlayer"):Wait()
+    LocalPlayer = Players.LocalPlayer
+end
+
+local function RejoinCurrentServer()
+    local placeId = game.PlaceId
+    local jobId = game.JobId
+
+    -- Повтор при сбое телепортации (сервер мог временно лагнуть)
+    TeleportService.TeleportInitFailed:Connect(function(player, teleportResult, errorMessage)
+        if player == LocalPlayer then
+            task.wait(5)
+            pcall(function()
+                TeleportService:TeleportToPlaceInstance(placeId, jobId, LocalPlayer)
+            end)
+        end
+    end)
+
+    pcall(function()
+        TeleportService:TeleportToPlaceInstance(placeId, jobId, LocalPlayer)
+    end)
+end
+
+-- Фоновый таймер перезахода
+task.delay(REJOIN_TIME_SECONDS, function()
+    RejoinCurrentServer()
+end)
