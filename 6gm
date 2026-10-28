@@ -634,27 +634,60 @@ local function BindClick(guiElement, callback)
     guiElement.TouchTap:Connect(fire)
 end
 
--- === УНИВЕРСАЛЬНЫЙ UI-ПАРСЕР СУМКИ ===
+-- === УНИВЕРСАЛЬНЫЙ UI-ПАРСЕР СУМКИ (ТЕЛЕФОН / ПЛАНШЕТ / ПК) ===
 local function SetupBagParser()
     task.spawn(function()
         local playerGui = LocalPlayer:WaitForChild("PlayerGui", 15)
         if not playerGui then return end
 
+        local hookedContainers: { [Instance]: boolean } = {}
+
+        -- Полная проверка реальной видимости на экране (по аналогии с votepads)
+        local function isBagActuallyVisible(bagFrame: GuiObject, coinsLabel: TextLabel?): boolean
+            if not bagFrame.Visible then return false end
+            if coinsLabel and (not coinsLabel.Visible or coinsLabel.TextTransparency >= 1) then
+                return false
+            end
+            if bagFrame.AbsoluteSize.X <= 0 or bagFrame.AbsoluteSize.Y <= 0 then
+                return false
+            end
+
+            -- Проверка предков вплоть до ScreenGui
+            local curr: Instance? = bagFrame.Parent
+            while curr and curr:IsA("GuiObject") do
+                if not (curr :: GuiObject).Visible then
+                    return false
+                end
+                if curr:IsA("CanvasGroup") and (curr :: CanvasGroup).GroupTransparency >= 1 then
+                    return false
+                end
+                curr = curr.Parent
+            end
+            return true
+        end
+
         local function hookContainer(container: Instance)
+            if not container or hookedContainers[container] then return end
+            hookedContainers[container] = true
+
             local function bindToCurrencyBag(bagFrame: Instance)
                 if not bagFrame:IsA("GuiObject") then return end
 
-                local currencyFrame = bagFrame:WaitForChild("CurrencyFrame", 5)
-                local icon = currencyFrame and currencyFrame:WaitForChild("Icon", 5)
-                local coinsLabel = icon and icon:WaitForChild("Coins", 5) :: TextLabel?
-                local fullLabel = bagFrame:WaitForChild("Full", 5) :: TextLabel?
+                local currencyFrame = bagFrame:FindFirstChild("CurrencyFrame") or bagFrame:WaitForChild("CurrencyFrame", 2)
+                local icon = currencyFrame and (currencyFrame:FindFirstChild("Icon") or currencyFrame:WaitForChild("Icon", 2))
+                local coinsLabel = icon and (icon:FindFirstChild("Coins") or icon:WaitForChild("Coins", 2)) :: TextLabel?
 
-                if not coinsLabel or not fullLabel then return end
+                -- coinsLabel — единственный строго обязательный элемент для подсчета монет
+                if not coinsLabel or not coinsLabel:IsA("TextLabel") then return end
+
+                -- Опциональные индикаторы заполненности (не блокируют привязку, если их нет)
+                local fullLabel = bagFrame:FindFirstChild("Full") :: TextLabel?
+                local fullBagIcon = bagFrame:FindFirstChild("FullBagIcon") :: ImageLabel?
 
                 local lastCount = tonumber(coinsLabel.Text) or 0
 
                 local function checkFull()
-                    if not bagFrame.Visible then return end
+                    if not isBagActuallyVisible(bagFrame, coinsLabel) then return end
                     local count = tonumber(coinsLabel.Text) or 0
                     
                     if count < 40 then
@@ -683,9 +716,10 @@ local function SetupBagParser()
                     BagIsFull = isFull
                 end
 
+                -- Реактивное обновление при изменении текста количества монет
                 RegisterConnection(coinsLabel:GetPropertyChangedSignal("Text"):Connect(function()
                     if IsTerminated then return end
-                    if not bagFrame.Visible then return end
+                    if not isBagActuallyVisible(bagFrame, coinsLabel) then return end
 
                     local currentCount = tonumber(coinsLabel.Text) or 0
                     if currentCount > lastCount then
@@ -703,26 +737,62 @@ local function SetupBagParser()
                     checkFull()
                 end))
 
-                RegisterConnection(fullLabel:GetPropertyChangedSignal("Visible"):Connect(function()
-                    if IsTerminated then return end
-                    checkFull()
-                end))
-
-                RegisterConnection(fullLabel:GetPropertyChangedSignal("Text"):Connect(function()
-                    if IsTerminated then return end
-                    checkFull()
-                end))
-
+                -- Проверка при изменении видимости самого фрейма
                 RegisterConnection(bagFrame:GetPropertyChangedSignal("Visible"):Connect(function()
                     if IsTerminated then return end
-                    if bagFrame.Visible then
+                    if isBagActuallyVisible(bagFrame, coinsLabel) then
                         ActiveCurrencyName = bagFrame.Name
                         BagCoinCount = tonumber(coinsLabel.Text) or 0
                         checkFull()
                     end
                 end))
 
-                if bagFrame.Visible then
+                -- Проверка при изменении видимости всех предков (Container -> CoinBags -> Game/Dock)
+                local currParent: Instance? = bagFrame.Parent
+                while currParent and currParent:IsA("GuiObject") do
+                    local pObj = currParent :: GuiObject
+                    RegisterConnection(pObj:GetPropertyChangedSignal("Visible"):Connect(function()
+                        if IsTerminated then return end
+                        if isBagActuallyVisible(bagFrame, coinsLabel) then
+                            ActiveCurrencyName = bagFrame.Name
+                            BagCoinCount = tonumber(coinsLabel.Text) or 0
+                            checkFull()
+                        end
+                    end))
+                    currParent = currParent.Parent
+                end
+
+                if fullLabel then
+                    RegisterConnection(fullLabel:GetPropertyChangedSignal("Visible"):Connect(function()
+                        if IsTerminated then return end
+                        checkFull()
+                    end))
+
+                    RegisterConnection(fullLabel:GetPropertyChangedSignal("Text"):Connect(function()
+                        if IsTerminated then return end
+                        checkFull()
+                    end))
+
+                    RegisterConnection(fullLabel:GetPropertyChangedSignal("TextTransparency"):Connect(function()
+                        if IsTerminated then return end
+                        checkFull()
+                    end))
+                end
+
+                if fullBagIcon then
+                    RegisterConnection(fullBagIcon:GetPropertyChangedSignal("Visible"):Connect(function()
+                        if IsTerminated then return end
+                        checkFull()
+                    end))
+
+                    RegisterConnection(fullBagIcon:GetPropertyChangedSignal("ImageTransparency"):Connect(function()
+                        if IsTerminated then return end
+                        checkFull()
+                    end))
+                end
+
+                -- Начальная инициализация при старте
+                if isBagActuallyVisible(bagFrame, coinsLabel) then
                     ActiveCurrencyName = bagFrame.Name
                     BagCoinCount = tonumber(coinsLabel.Text) or 0
                     checkFull()
@@ -739,25 +809,52 @@ local function SetupBagParser()
             end))
         end
 
-        local function hookMainGui(mainGui: Instance)
+        local function scanAndHookContainers(mainGui: Instance)
             if mainGui.Name ~= "MainGUI" then return end
-            local lobby = mainGui:WaitForChild("Lobby", 10)
-            local dock = lobby and lobby:WaitForChild("Dock", 10)
-            local coinBags = dock and dock:WaitForChild("CoinBags", 10)
-            local container = coinBags and coinBags:WaitForChild("Container", 10)
-            if container then
-                hookContainer(container)
+
+            -- 1. Режим Планшета / ПК / Игры: MainGUI.Game.CoinBags.Container
+            local gameObj = mainGui:FindFirstChild("Game")
+            local gameBags = gameObj and gameObj:FindFirstChild("CoinBags")
+            local gameContainer = gameBags and gameBags:FindFirstChild("Container")
+            if gameContainer then
+                hookContainer(gameContainer)
             end
+
+            -- 2. Режим Телефона: MainGUI.Lobby.Dock.CoinBags.Container
+            local lobby = mainGui:FindFirstChild("Lobby")
+            local dock = lobby and lobby:FindFirstChild("Dock")
+            local dockBags = dock and dock:FindFirstChild("CoinBags")
+            local dockContainer = dockBags and dockBags:FindFirstChild("Container")
+            if dockContainer then
+                hookContainer(dockContainer)
+            end
+
+            -- 3. Резервный моментальный поиск в глубину (если путь нестандартный)
+            if not gameContainer and not dockContainer then
+                local anyBags = mainGui:FindFirstChild("CoinBags", true)
+                local anyContainer = anyBags and anyBags:FindFirstChild("Container")
+                if anyContainer then
+                    hookContainer(anyContainer)
+                end
+            end
+
+            -- 4. Реактивный перехват динамического появления Container без постоянных циклов
+            RegisterConnection(mainGui.DescendantAdded:Connect(function(desc)
+                if IsTerminated then return end
+                if desc.Name == "Container" and desc.Parent and desc.Parent.Name == "CoinBags" then
+                    hookContainer(desc)
+                end
+            end))
         end
 
         local existingMain = playerGui:FindFirstChild("MainGUI")
         if existingMain then
-            task.spawn(hookMainGui, existingMain)
+            task.spawn(scanAndHookContainers, existingMain)
         end
 
         RegisterConnection(playerGui.ChildAdded:Connect(function(child)
             if child.Name == "MainGUI" then
-                task.spawn(hookMainGui, child)
+                task.spawn(scanAndHookContainers, child)
             end
         end))
     end)
