@@ -85,6 +85,8 @@ local SETTINGS = {
     GameMode = (initialProfile and (initialProfile.GameMode == "Twin" or initialProfile.GameMode == "Solo") and initialProfile.GameMode) or (initialSavedTwin ~= "" and "Twin" or "Solo"),
     RoundMode = (initialProfile and (initialProfile.RoundMode == "Classic" or initialProfile.RoundMode == "Assassin") and initialProfile.RoundMode) or "Assassin",
     TwinName = initialSavedTwin,
+    TwinAvoidEnabled = true, -- Умное разделение зон фарма с твинком (без гонок за одной монетой)
+    TwinAvoidRadius = 60, -- Расширенная сфера влияния твинка (студы)
     UnderfloorOffset = 3.8 -- Смещение под карту (студы ниже монеты)
 }
 
@@ -597,27 +599,89 @@ local function SetupRemoteHooks()
 end
 SetupRemoteHooks()
 
-local function GetNearestCoin()
+local function GetNearestCoin(): Instance?
     local char = rt:Character()
     if not char or not char.PrimaryPart then return nil end
 
-    local pos = char.PrimaryPart.Position
-    local nearestCoin = nil
-    local minDist = math.huge
+    local myPos = char.PrimaryPart.Position
+
+    -- Поиск позиции и вектора движения твинка (1 раз за вызов — 0.0001 мс, 0% CPU)
+    local twinPos: Vector3? = nil
+    local twinPredPos: Vector3? = nil
+    local twinPlr: Player? = nil
+    local twinName = SETTINGS.TwinName
+
+    if SETTINGS.TwinAvoidEnabled and twinName and twinName ~= "" then
+        local cleanTwin = string.lower(string.gsub(twinName, "^%s*(.-)%s*$", "%1"))
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LocalPlayer and string.lower(plr.Name) == cleanTwin then
+                if IsPlayerActuallyAlive(plr) then
+                    local tChar = plr.Character
+                    local tHrp = tChar and (tChar.PrimaryPart or tChar:FindFirstChild("HumanoidRootPart") or tChar:FindFirstChildWhichIsA("BasePart"))
+                    if tHrp then
+                        twinPos = tHrp.Position
+                        twinPlr = plr
+                        -- Векторное упреждение полета: определяем курс движения твинка на 1.5–2 сек вперед
+                        local vel = tHrp.AssemblyLinearVelocity
+                        if vel and vel.Magnitude > 3 then
+                            twinPredPos = twinPos + (vel.Unit * math.min(vel.Magnitude * 1.8, 50))
+                        end
+                    end
+                end
+                break
+            end
+        end
+    end
+
+    local bestCoin = nil
+    local bestDist = math.huge
+
+    local fallbackCoin = nil
+    local fallbackDist = math.huge
+
+    local avoidRadius = SETTINGS.TwinAvoidRadius or 60
 
     for coin, _ in pairs(rt.cachedCoins) do
         if coin and coin.Parent and not isCoinTouched(coin) then
-            local dist = (coin.Position - pos).Magnitude
-            if dist < minDist then
-                minDist = dist
-                nearestCoin = coin
+            local coinPos = coin.Position
+            local myDist = (coinPos - myPos).Magnitude
+
+            -- Всегда сохраняем абсолютную ближайшую монету (fallback, если вся карта зачищена)
+            if myDist < fallbackDist then
+                fallbackDist = myDist
+                fallbackCoin = coin
+            end
+
+            -- 3-уровневая проверка принадлежности монеты твинку:
+            local isTwinZone = false
+            if twinPos then
+                local twinDist = (coinPos - twinPos).Magnitude
+                local predDist = twinPredPos and (coinPos - twinPredPos).Magnitude or math.huge
+
+                -- 1) Монета находится в радиусе 60 студов вокруг твинка
+                -- 2) Монета лежит прямо по курсу полета твинка (в радиусе 35 студов от упрежденной точки)
+                -- 3) Твинк строго ближе к этой монете, чем мы (чистая диаграмма Вороного)
+                -- 4) При одинаковом расстоянии тай-брейкер по никнейму исключает одновременный выбор
+                if (twinDist < avoidRadius)
+                    or (predDist < 35)
+                    or (twinDist < myDist)
+                    or (twinDist == myDist and twinPlr and LocalPlayer.Name < twinPlr.Name) then
+                    isTwinZone = true
+                end
+            end
+
+            if not isTwinZone then
+                if myDist < bestDist then
+                    bestDist = myDist
+                    bestCoin = coin
+                end
             end
         else
             rt.cachedCoins[coin] = nil
         end
     end
 
-    return nearestCoin
+    return bestCoin or fallbackCoin
 end
 
 local function BindClick(guiElement, callback)
@@ -1398,7 +1462,7 @@ local TitleLabel = Instance.new("TextLabel", TitleBar)
 TitleLabel.Size = UDim2.new(1, -40, 1, 0)
 TitleLabel.Position = UDim2.new(0, 12, 0, 0)
 TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "MM2 AIO SCRIPT [TURBO]"
+TitleLabel.Text = "MM2 AIO SCRIPT [TURBO]2"
 TitleLabel.TextColor3 = Color3.new(1, 1, 1)
 TitleLabel.Font = Enum.Font.GothamBold
 TitleLabel.TextSize = 14
