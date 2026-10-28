@@ -1,0 +1,25 @@
+local REJOIN_TIME = 3 -- Время до перезахода в секундах (например, 300 сек = 5 минут)
+
+-- Ждем полной загрузки игры и персонажа
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
+local TeleportService = game:GetService("TeleportService")
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+
+print(string.format("[AutoRejoin] Таймер запущен. Перезаход через %d сек.", REJOIN_TIME))
+
+task.wait(REJOIN_TIME)
+
+-- Перезаход именно на этот же сервер (по JobId)
+local success, err = pcall(function()
+    TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer)
+end)
+
+-- Если конкретный инстанс сервера закрылся или переполнен, делаем обычный реконнект в плейс
+if not success then
+    warn("[AutoRejoin] Не удалось вернуться на тот же сервер: " .. tostring(err))
+    TeleportService:Teleport(game.PlaceId, LocalPlayer)
+end
