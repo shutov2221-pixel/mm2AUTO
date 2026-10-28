@@ -868,6 +868,12 @@ local function InspectAndEquipKnife(): Tool?
     if knife.Parent ~= char then pcall(function() knife.Parent = char end) end
 
     task.wait(0.02)
+
+    local knifeClient = knife:FindFirstChild("KnifeClient") or knife:FindFirstChildWhichIsA("LocalScript")
+    if knifeClient and knifeClient:IsA("LocalScript") then
+        pcall(function() knifeClient.Disabled = true end)
+    end
+
     return knife
 end
 
@@ -947,7 +953,7 @@ local function PreRoundKillChain()
     if not knife then
         UpdateStatus("Зачистка: Ожидание выдачи ножа сервером...", Color3.fromRGB(255, 200, 100))
         local waitKnifeStart = tick()
-        while not knife and tick() - waitKnifeStart < 30 and not IsTerminated and RoundInProgress() and rt:CheckIfPlayerWasInARound() do
+        while not knife and tick() - waitKnifeStart < 30 and not IsTerminated and RoundInProgress() and rt:CheckIfPlayerWasInARound() and CurrentState == State.Action and not BagIsFull and SETTINGS.RoundMode == "Assassin" do
             task.wait(0.2)
             knife = InspectAndEquipKnife()
         end
@@ -956,6 +962,12 @@ local function PreRoundKillChain()
     if not knife then
         UpdateStatus("Зачистка: Нож не выдан сервером", Color3.fromRGB(255, 120, 120))
         return
+    end
+
+    -- Отключаем KnifeClient скрипт ножа, чтобы случайно не убить рядом проходящих игроков во время полета
+    local knifeClient = knife:FindFirstChild("KnifeClient") or knife:FindFirstChildWhichIsA("LocalScript")
+    if knifeClient and knifeClient:IsA("LocalScript") then
+        pcall(function() knifeClient.Disabled = true end)
     end
 
     UpdateStatus("Зачистка: Старт цепочки (" .. (SETTINGS.GameMode == "Twin" and "С Твинком" or "Соло") .. ")", Color3.fromRGB(255, 180, 50))
@@ -971,7 +983,10 @@ local function PreRoundKillChain()
     local uiTextConn: RBXScriptConnection? = nil
 
     local function TryEliminateTarget(plr: Player, rawName: string?)
-        if not isChainRunning or IsTerminated then return end
+        if not isChainRunning or IsTerminated or SETTINGS.RoundMode ~= "Assassin" then
+            isChainRunning = false
+            return
+        end
         if not plr or not plr.Character then return end
 
         local hum = plr.Character:FindFirstChildOfClass("Humanoid")
@@ -1066,7 +1081,7 @@ local function PreRoundKillChain()
     local noTargetStreak = 0
     local startTime = tick()
 
-    while isChainRunning and not IsTerminated and SETTINGS.AutoFarmEnabled do
+    while isChainRunning and not IsTerminated and SETTINGS.AutoFarmEnabled and CurrentState == State.Action and not BagIsFull and SETTINGS.RoundMode == "Assassin" do
         task.wait(0.05)
 
         -- Проверка нашего персонажа и раунда
@@ -1625,12 +1640,20 @@ BindClick(RoundModeBtn, function()
         SETTINGS.RoundMode = "Classic"
         RoundModeBtn.Text = "РЕЖИМ: CLASSIC"
         RoundModeBtn.BackgroundColor3 = Color3.fromRGB(45, 125, 245)
-        UpdateStatus("Режим: Classic (без ножа и зачистки)", Color3.fromRGB(100, 200, 255))
+        UnequipKnife()
+        UpdateStatus("Режим: Classic (зачистка отключена)", Color3.fromRGB(100, 200, 255))
     else
         SETTINGS.RoundMode = "Assassin"
         RoundModeBtn.Text = "РЕЖИМ: ASSASSIN"
         RoundModeBtn.BackgroundColor3 = Color3.fromRGB(150, 40, 180)
-        UpdateStatus("Режим: Assassin (нож + зачистка)", Color3.fromRGB(220, 120, 255))
+        UpdateStatus("Режим: Assassin (зачистка активна)", Color3.fromRGB(220, 120, 255))
+
+        -- Если раунд уже идет прямо сейчас, мгновенно подключаем фоновую зачистку
+        if SETTINGS.AutoFarmEnabled and not IsTerminated and CurrentState == State.Action and RoundInProgress() and rt:CheckIfPlayerWasInARound() and not BagIsFull then
+            task.spawn(function()
+                PreRoundKillChain()
+            end)
+        end
     end
 end)
 
@@ -2013,14 +2036,16 @@ end
 
 -- === ОСНОВНОЕ ДЕЙСТВИЕ В РАУНДЕ (ЗАЧИСТКА -> ФАРМ -> ОБРАБОТКА СУМКИ) ===
 local function ActionState()
-    -- 1. Предварительная зачистка (PreRoundKillChain) запускается только в режиме Assassin
+    -- 1. Предварительная зачистка (PreRoundKillChain) запускается параллельно в фоновом потоке
     if SETTINGS.RoundMode == "Assassin" and SETTINGS.AutoFarmEnabled and not IsTerminated and RoundInProgress() and rt:CheckIfPlayerWasInARound() then
-        PreRoundKillChain()
+        task.spawn(function()
+            PreRoundKillChain()
+        end)
     end
 
     if not SETTINGS.AutoFarmEnabled or IsTerminated then return end
 
-    -- 2. Затем начинаем сбор монет (если раунд ещё продолжается и персонаж жив)
+    -- 2. Сбор монет стартует мгновенно (как только появится CoinContainer), не теряя секунды на зачистку
     if RoundInProgress() and rt:CheckIfPlayerWasInARound() then
         CollectCoins()
     end
