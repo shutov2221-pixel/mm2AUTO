@@ -8,8 +8,41 @@
 -- 5. Авто-сохранение ника твинка в mm2_farm_exception.txt.
 -- =====================================================================
 
--- === СОХРАНЕНИЕ / ЗАГРУЗКА ИСКЛЮЧЕНИЯ (ТВИНКА) ===
+local HttpService = game:GetService("HttpService")
+
+-- === СОХРАНЕНИЕ / ЗАГРУЗКА ПРОФИЛЯ И ТВИНКА ===
+local PROFILE_FILE = "profile"
 local EXCEPTION_FILE = "mm2_farm_exception.txt"
+
+local function LoadProfile(): { [string]: any }?
+    local rf = readfile or (syn and syn.readfile)
+    local isf = isfile or (syn and syn.isfile)
+    if typeof(isf) == "function" and typeof(rf) == "function" then
+        local targetFile = nil
+        local ok1, exists1 = pcall(isf, PROFILE_FILE)
+        if ok1 and exists1 then
+            targetFile = PROFILE_FILE
+        else
+            local ok2, exists2 = pcall(isf, PROFILE_FILE .. ".json")
+            if ok2 and exists2 then
+                targetFile = PROFILE_FILE .. ".json"
+            end
+        end
+
+        if targetFile then
+            local readOk, content = pcall(rf, targetFile)
+            if readOk and typeof(content) == "string" and content ~= "" then
+                local decodeOk, data = pcall(function()
+                    return HttpService:JSONDecode(content)
+                end)
+                if decodeOk and typeof(data) == "table" then
+                    return data
+                end
+            end
+        end
+    end
+    return nil
+end
 
 local function LoadTwinName(): string
     local name = ""
@@ -37,22 +70,53 @@ local function SaveTwinName(name: string): boolean
     return false
 end
 
-local initialSavedTwin = LoadTwinName()
+local initialProfile = LoadProfile()
+local initialSavedTwin = (initialProfile and typeof(initialProfile.TwinName) == "string" and initialProfile.TwinName) or LoadTwinName()
 
 -- === НАСТРОЙКИ СИСТЕМЫ И ПЕРЕМЕННЫЕ ===
 local SETTINGS = {
-    AutoFarmEnabled = false,
-    AutoVoteEnabled = false,
-    VoteSpamEnabled = false, -- Спам голосования до 11 раз через сброс (по умолчанию выключен)
-    Speed = 22,
-    FpsCap = 20,
-    PotatoMode = false,
-    BagFullMode = "Reset", -- "Reset" | "KillAll"
-    GameMode = (initialSavedTwin ~= "" and "Twin" or "Solo"), -- "Twin" | "Solo"
-    RoundMode = "Assassin", -- "Assassin" | "Classic"
+    AutoFarmEnabled = (initialProfile and initialProfile.AutoFarmEnabled == true) or false,
+    AutoVoteEnabled = (initialProfile and initialProfile.AutoVoteEnabled == true) or false,
+    VoteSpamEnabled = (initialProfile and initialProfile.VoteSpamEnabled == true) or false,
+    Speed = (initialProfile and typeof(initialProfile.Speed) == "number" and initialProfile.Speed) or 22,
+    FpsCap = (initialProfile and typeof(initialProfile.FpsCap) == "number" and initialProfile.FpsCap) or 20,
+    PotatoMode = (initialProfile and initialProfile.PotatoMode == true) or false,
+    BagFullMode = (initialProfile and (initialProfile.BagFullMode == "KillAll" or initialProfile.BagFullMode == "Reset") and initialProfile.BagFullMode) or "Reset",
+    GameMode = (initialProfile and (initialProfile.GameMode == "Twin" or initialProfile.GameMode == "Solo") and initialProfile.GameMode) or (initialSavedTwin ~= "" and "Twin" or "Solo"),
+    RoundMode = (initialProfile and (initialProfile.RoundMode == "Classic" or initialProfile.RoundMode == "Assassin") and initialProfile.RoundMode) or "Assassin",
     TwinName = initialSavedTwin,
     UnderfloorOffset = 3.8 -- Смещение под карту (студы ниже монеты)
 }
+
+local function SaveProfile(statsVisible: boolean?): boolean
+    local wf = writefile or (syn and syn.writefile)
+    if typeof(wf) == "function" then
+        local profileData = {
+            AutoFarmEnabled = (SETTINGS.AutoFarmEnabled == true),
+            AutoVoteEnabled = (SETTINGS.AutoVoteEnabled == true),
+            VoteSpamEnabled = (SETTINGS.VoteSpamEnabled == true),
+            Speed = SETTINGS.Speed or 22,
+            FpsCap = SETTINGS.FpsCap or 20,
+            PotatoMode = (SETTINGS.PotatoMode == true),
+            BagFullMode = SETTINGS.BagFullMode or "Reset",
+            GameMode = SETTINGS.GameMode or "Solo",
+            RoundMode = SETTINGS.RoundMode or "Assassin",
+            TwinName = SETTINGS.TwinName or "",
+            StatsPanelVisible = (statsVisible == true)
+        }
+        local encodeOk, jsonStr = pcall(function()
+            return HttpService:JSONEncode(profileData)
+        end)
+        if encodeOk and typeof(jsonStr) == "string" then
+            local writeOk = pcall(wf, PROFILE_FILE, jsonStr)
+            if writeOk and SETTINGS.TwinName then
+                SaveTwinName(SETTINGS.TwinName)
+            end
+            return writeOk
+        end
+    end
+    return false
+end
 
 local MAP_PRIORITIES = {
     "Hospital 3", "House 2", "Office 3", "Bank 2", "Workplace",
@@ -1293,10 +1357,31 @@ RegisterConnection(RunService.RenderStepped:Connect(function()
     end
 end))
 
+-- Кнопка сохранения профиля по умолчанию (над кнопками СТАТИСТИКА, ФАРМ, ГОЛОС)
+local SaveProfileBtn = Instance.new("TextButton", MainFrame)
+SaveProfileBtn.Name = "SaveProfileBtn"
+SaveProfileBtn.Size = UDim2.new(1, -16, 0, 26)
+SaveProfileBtn.Position = UDim2.new(0, 8, 0, 40)
+SaveProfileBtn.BackgroundColor3 = Color3.fromRGB(35, 130, 70)
+SaveProfileBtn.Text = "💾 СОХРАНИТЬ ПРОФИЛЬ"
+SaveProfileBtn.TextColor3 = Color3.new(1, 1, 1)
+SaveProfileBtn.Font = Enum.Font.GothamBold
+SaveProfileBtn.TextSize = 12
+SaveProfileBtn.Active = true
+SaveProfileBtn.ZIndex = 10
+Instance.new("UICorner", SaveProfileBtn).CornerRadius = UDim.new(0, 6)
+
+SaveProfileBtn.MouseEnter:Connect(function()
+    SaveProfileBtn.BackgroundColor3 = Color3.fromRGB(45, 160, 85)
+end)
+SaveProfileBtn.MouseLeave:Connect(function()
+    SaveProfileBtn.BackgroundColor3 = Color3.fromRGB(35, 130, 70)
+end)
+
 -- Верхнее меню (Кнопки режимов)
 local TopMenu = Instance.new("Frame", MainFrame)
-TopMenu.Size = UDim2.new(1, -16, 0, 35)
-TopMenu.Position = UDim2.new(0, 8, 0, 42)
+TopMenu.Size = UDim2.new(1, -16, 0, 32)
+TopMenu.Position = UDim2.new(0, 8, 0, 70)
 TopMenu.BackgroundTransparency = 1
 
 local TopMenuLayout = Instance.new("UIListLayout", TopMenu)
@@ -1318,16 +1403,18 @@ local function CreateTopButton(text, color, parent)
     return btn
 end
 
-local BtnStats = CreateTopButton("СТАТИСТИКА", Color3.fromRGB(60, 60, 70), TopMenu)
-local BtnFarm = CreateTopButton("ФАРМ: OFF", Color3.fromRGB(200, 50, 50), TopMenu)
-local BtnVote = CreateTopButton("ГОЛОС: OFF", Color3.fromRGB(200, 50, 50), TopMenu)
+local isInitialStats = (initialProfile and initialProfile.StatsPanelVisible == true) or false
+
+local BtnStats = CreateTopButton("СТАТИСТИКА", isInitialStats and Color3.fromRGB(45, 125, 245) or Color3.fromRGB(60, 60, 70), TopMenu)
+local BtnFarm = CreateTopButton(SETTINGS.AutoFarmEnabled and "ФАРМ: ON" or "ФАРМ: OFF", SETTINGS.AutoFarmEnabled and Color3.fromRGB(50, 200, 50) or Color3.fromRGB(200, 50, 50), TopMenu)
+local BtnVote = CreateTopButton(SETTINGS.AutoVoteEnabled and "ГОЛОС: ON" or "ГОЛОС: OFF", SETTINGS.AutoVoteEnabled and Color3.fromRGB(50, 200, 50) or Color3.fromRGB(200, 50, 50), TopMenu)
 
 -- Панель статистики
 local StatsPanel = Instance.new("Frame", MainFrame)
 StatsPanel.Size = UDim2.new(1, -16, 0, 65)
-StatsPanel.Position = UDim2.new(0, 8, 0, 85)
+StatsPanel.Position = UDim2.new(0, 8, 0, 107)
 StatsPanel.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
-StatsPanel.Visible = false
+StatsPanel.Visible = isInitialStats
 Instance.new("UICorner", StatsPanel).CornerRadius = UDim.new(0, 6)
 
 local StatsText = Instance.new("TextLabel", StatsPanel)
@@ -1344,7 +1431,7 @@ StatsText.TextYAlignment = Enum.TextYAlignment.Top
 -- Контейнер настроек
 local SettingsContainer = Instance.new("Frame", MainFrame)
 SettingsContainer.Size = UDim2.new(1, -16, 0, 245)
-SettingsContainer.Position = UDim2.new(0, 8, 0, 85)
+SettingsContainer.Position = UDim2.new(0, 8, 0, isInitialStats and 177 or 107)
 SettingsContainer.BackgroundTransparency = 1
 
 local SettingsLayout = Instance.new("UIListLayout", SettingsContainer)
@@ -1424,8 +1511,8 @@ end)
 
 local PotatoBtn = Instance.new("TextButton", SettingsContainer)
 PotatoBtn.Size = UDim2.new(1, 0, 0, 35)
-PotatoBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
-PotatoBtn.Text = "POTATO MODE: OFF"
+PotatoBtn.BackgroundColor3 = SETTINGS.PotatoMode and Color3.fromRGB(200, 150, 50) or Color3.fromRGB(60, 60, 70)
+PotatoBtn.Text = "POTATO MODE: " .. (SETTINGS.PotatoMode and "ON" or "OFF")
 PotatoBtn.TextColor3 = Color3.new(1, 1, 1)
 PotatoBtn.Font = Enum.Font.GothamSemibold
 PotatoBtn.TextSize = 13
@@ -1518,14 +1605,14 @@ Instance.new("UICorner", SaveTwinBtn).CornerRadius = UDim.new(0, 6)
 local VoteSpamBtn = Instance.new("TextButton", SettingsContainer)
 VoteSpamBtn.Name = "VoteSpamBtn"
 VoteSpamBtn.Size = UDim2.new(1, 0, 0, 35)
-VoteSpamBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
-VoteSpamBtn.Text = "СПАМ ГОЛОСА: OFF"
+VoteSpamBtn.BackgroundColor3 = SETTINGS.VoteSpamEnabled and Color3.fromRGB(50, 200, 50) or Color3.fromRGB(60, 60, 70)
+VoteSpamBtn.Text = "СПАМ ГОЛОСА: " .. (SETTINGS.VoteSpamEnabled and "ON" or "OFF")
 VoteSpamBtn.TextColor3 = Color3.new(1, 1, 1)
 VoteSpamBtn.Font = Enum.Font.GothamSemibold
 VoteSpamBtn.TextSize = 13
 VoteSpamBtn.Active = true
 VoteSpamBtn.ZIndex = 10
-VoteSpamBtn.Visible = false
+VoteSpamBtn.Visible = (SETTINGS.AutoVoteEnabled == true)
 Instance.new("UICorner", VoteSpamBtn).CornerRadius = UDim.new(0, 6)
 
 -- Подвал: строка состояния
@@ -1560,7 +1647,7 @@ local function UpdateGuiSizes()
     TwinContainer.Visible = isTwin
     VoteSpamBtn.Visible = isVote
 
-    local settingsY = isStats and 155 or 85
+    local settingsY = isStats and 177 or 107
     local extraH = (isTwin and 40 or 0) + (isVote and 40 or 0)
     local settingsH = 205 + extraH
 
@@ -1572,6 +1659,24 @@ local function UpdateGuiSizes()
 end
 
 UpdateGuiSizes()
+
+-- Сохранение профиля по умолчанию в файл profile
+BindClick(SaveProfileBtn, function()
+    local ok = SaveProfile(StatsPanel.Visible)
+    if ok then
+        SaveProfileBtn.Text = "✅ ПРОФИЛЬ СОХРАНЕН!"
+        SaveProfileBtn.BackgroundColor3 = Color3.fromRGB(40, 180, 80)
+        UpdateStatus("Профиль сохранен в workspace/" .. PROFILE_FILE, Color3.fromRGB(100, 255, 100))
+        task.delay(1.5, function()
+            if not IsTerminated and SaveProfileBtn then
+                SaveProfileBtn.Text = "💾 СОХРАНИТЬ ПРОФИЛЬ"
+                SaveProfileBtn.BackgroundColor3 = Color3.fromRGB(35, 130, 70)
+            end
+        end)
+    else
+        UpdateStatus("Ошибка: executor не поддерживает writefile", Color3.fromRGB(255, 100, 100))
+    end
+end)
 
 -- Переключение спама голоса
 BindClick(VoteSpamBtn, function()
@@ -1855,6 +1960,21 @@ BindClick(PotatoBtn, function()
         UpdateStatus("Potato Mode активирован", Color3.fromRGB(200, 150, 50))
     end
 end)
+
+-- Применение начального состояния сохраненного профиля
+if initialProfile then
+    UpdateStatus("Профиль загружен (" .. PROFILE_FILE .. ")", Color3.fromRGB(100, 255, 200))
+    if SETTINGS.PotatoMode then
+        applyPotatoMode()
+    end
+    if SETTINGS.AutoFarmEnabled then
+        StatsData.StartTime = tick()
+        CurrentState = State.WaitingForRound
+        local char = rt:Character()
+        local hum = char and char:FindFirstChild("Humanoid")
+        if hum then hum.PlatformStand = true end
+    end
+end
 
 -- === ПРОВЕРКА УДАЛЕНИЯ МОНЕТЫ (PING-SYNC) ===
 local function isCoinCollectedByServer(coin)
