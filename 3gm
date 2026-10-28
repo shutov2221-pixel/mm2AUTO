@@ -98,8 +98,9 @@ rt.player = LocalPlayer
 rt.coinContainer = nil
 rt.touchedCoins = {}       
 rt.cachedCoins = {}
-rt.potatoConnections = setmetatable({}, { __mode = "v" })
+rt.potatoConnections = {}
 rt.coinRemovedConn = nil   
+rt.ancestryConn = nil
 rt.cachedBodyParts = {}    
 
 local State = {
@@ -191,6 +192,19 @@ local function AutoFarmCleanUp()
         rt.coinRemovedConn:Disconnect()
         rt.coinRemovedConn = nil
     end
+    if rt.ancestryConn then
+        rt.ancestryConn:Disconnect()
+        rt.ancestryConn = nil
+    end
+    rt.coinContainer = nil
+
+    -- Безопасная обратная очистка отключенных соединений из массива ActiveConnections
+    for i = #ActiveConnections, 1, -1 do
+        local conn = ActiveConnections[i]
+        if not conn or not conn.Connected then
+            table.remove(ActiveConnections, i)
+        end
+    end
 end
 
 -- === ПРОВЕРКА ЛИМИТА СУМКИ ===
@@ -213,11 +227,22 @@ local function PopulateCoins()
     table.clear(rt.cachedCoins)
     if not rt.coinContainer then return end
 
-    if rt.Added then rt.Added:Disconnect() end
+    if rt.Added then rt.Added:Disconnect(); rt.Added = nil end
     if rt.coinRemovedConn then
         rt.coinRemovedConn:Disconnect()
         rt.coinRemovedConn = nil
     end
+
+    -- Отслеживание удаления контейнера монет из Workspace
+    if rt.ancestryConn then
+        rt.ancestryConn:Disconnect()
+        rt.ancestryConn = nil
+    end
+    rt.ancestryConn = rt.coinContainer.AncestryChanged:Connect(function(_, parent)
+        if not parent or not rt.coinContainer or not rt.coinContainer:IsDescendantOf(Workspace) then
+            AutoFarmCleanUp()
+        end
+    end)
 
     local function checkAndAdd(node)
         if node:IsA("TouchTransmitter") and node.Parent and node.Parent:IsA("BasePart") then
@@ -230,7 +255,6 @@ local function PopulateCoins()
     end
 
     rt.Added = rt.coinContainer.DescendantAdded:Connect(checkAndAdd)
-    RegisterConnection(rt.Added)
 
     rt.coinRemovedConn = rt.coinContainer.ChildRemoved:Connect(function(child)
         local coin = child
@@ -249,7 +273,6 @@ local function PopulateCoins()
             if IsBagFull() then BagIsFull = true end
         end
     end)
-    RegisterConnection(rt.coinRemovedConn)
 end
 
 -- =====================================================================
@@ -354,7 +377,6 @@ local function InspectMapCandidate(child: Instance)
             end
         end)
         table.insert(candidateConnections[child], addConn)
-        RegisterConnection(addConn)
 
         local ancConn = child.AncestryChanged:Connect(function(_, parent)
             if not parent or parent ~= Workspace then
@@ -362,7 +384,6 @@ local function InspectMapCandidate(child: Instance)
             end
         end)
         table.insert(candidateConnections[child], ancConn)
-        RegisterConnection(ancConn)
 
         task.spawn(function()
             local foundSpawns = child:WaitForChild("Spawns", 15)
@@ -504,6 +525,11 @@ local function SetupRemoteHooks()
             end
         end))
     end
+
+    RegisterConnection(Players.PlayerRemoving:Connect(function(plr)
+        PlayerAliveCache[plr.Name] = nil
+        PlayerRolesCache[plr.Name] = nil
+    end))
 end
 SetupRemoteHooks()
 
@@ -1731,19 +1757,46 @@ local function applyPotatoMode()
         if #rt.potatoConnections == 0 then
             table.insert(rt.potatoConnections, Workspace.ChildAdded:Connect(function(child)
                 if not SETTINGS.PotatoMode or IsTerminated then return end
-                if Players:GetPlayerFromCharacter(child) or child:FindFirstChildOfClass("Humanoid") then
+
+                -- Мелкие детали и графические эффекты обрабатываем мгновенно без создания потока
+                if child:IsA("BasePart") or EffectsToDestroy[child.ClassName] then
+                    makePartPotato(child)
                     return
                 end
-                task.wait(0.1)
-                if Players:GetPlayerFromCharacter(child) or child:FindFirstChildOfClass("Humanoid") then
-                    return
+
+                -- Для моделей и папок: отложенный обход с защитой от обработки персонажей
+                if child:IsA("Model") or child:IsA("Folder") then
+                    task.spawn(function()
+                        if Players:GetPlayerFromCharacter(child) or child:FindFirstChildOfClass("Humanoid") then
+                            return
+                        end
+                        task.wait(0.1)
+                        if not SETTINGS.PotatoMode or IsTerminated then return end
+                        if Players:GetPlayerFromCharacter(child) or child:FindFirstChildOfClass("Humanoid") then
+                            return
+                        end
+                        makePartPotato(child)
+                        for _, v in ipairs(child:GetDescendants()) do
+                            makePartPotato(v)
+                        end
+                    end)
                 end
-                for _, v in ipairs(child:GetDescendants()) do makePartPotato(v) end
             end))
+
             table.insert(rt.potatoConnections, Lighting.ChildAdded:Connect(function(child)
                 if not SETTINGS.PotatoMode or IsTerminated then return end
-                task.wait(0.1)
-                for _, v in ipairs(child:GetDescendants()) do makePartPotato(v) end
+                if child:IsA("BasePart") or EffectsToDestroy[child.ClassName] then
+                    makePartPotato(child)
+                    return
+                end
+                task.spawn(function()
+                    task.wait(0.1)
+                    if not SETTINGS.PotatoMode or IsTerminated then return end
+                    makePartPotato(child)
+                    for _, v in ipairs(child:GetDescendants()) do
+                        makePartPotato(v)
+                    end
+                end)
             end))
         end
     else
