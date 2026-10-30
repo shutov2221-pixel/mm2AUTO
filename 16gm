@@ -4,7 +4,7 @@
 -- 1. Режимы зачистки: С ТВИНКОМ (остановка на твинке) / СОЛО (остановка при 2 игроках).
 -- 2. TurboKill: Двойной импульс touchinterest по хитбоксу без телепортов и зависаний.
 -- 3. Реактивный перехват ChangeTarget и RoundEndFade (0 мс задержки) + UI Watchdog.
--- 4. Переключатель действия при полной сумке: РЕСЕТ / KILL ALL.
+-- 4. Переключатель действия при полной сумке: РЕСЕТ / KILL ALL / AFK.
 -- 5. Сохранение всех настроек и ника твинка в profile.
 -- =====================================================================
 
@@ -54,7 +54,7 @@ local SETTINGS = {
     Speed = (initialProfile and typeof(initialProfile.Speed) == "number" and initialProfile.Speed) or 22,
     FpsCap = (initialProfile and typeof(initialProfile.FpsCap) == "number" and initialProfile.FpsCap) or 20,
     PotatoMode = (initialProfile and initialProfile.PotatoMode == true) or false,
-    BagFullMode = (initialProfile and (initialProfile.BagFullMode == "KillAll" or initialProfile.BagFullMode == "Reset") and initialProfile.BagFullMode) or "Reset",
+    BagFullMode = (initialProfile and (initialProfile.BagFullMode == "KillAll" or initialProfile.BagFullMode == "Reset" or initialProfile.BagFullMode == "AFK") and initialProfile.BagFullMode) or "Reset",
     GameMode = (initialProfile and (initialProfile.GameMode == "Twin" or initialProfile.GameMode == "Solo") and initialProfile.GameMode) or (initialSavedTwin ~= "" and "Twin" or "Solo"),
     RoundMode = (initialProfile and (initialProfile.RoundMode == "Classic" or initialProfile.RoundMode == "Assassin") and initialProfile.RoundMode) or "Assassin",
     TwinName = initialSavedTwin,
@@ -1658,13 +1658,21 @@ DualRow.Name = "DualRow"
 DualRow.Size = UDim2.new(1, 0, 0, 35)
 DualRow.BackgroundTransparency = 1
 
--- Кнопка действия при полной сумке: РЕСЕТ / KILL ALL
+-- Кнопка действия при полной сумке: РЕСЕТ / KILL ALL / AFK
 local BagModeBtn = Instance.new("TextButton", DualRow)
 BagModeBtn.Name = "BagModeBtn"
 BagModeBtn.Size = UDim2.new(0.5, -3, 1, 0)
 BagModeBtn.Position = UDim2.new(0, 0, 0, 0)
-BagModeBtn.BackgroundColor3 = (SETTINGS.BagFullMode == "KillAll") and Color3.fromRGB(180, 40, 40) or Color3.fromRGB(60, 60, 70)
-BagModeBtn.Text = (SETTINGS.BagFullMode == "KillAll") and "СУМКА: KILL ALL" or "СУМКА: РЕСЕТ"
+if SETTINGS.BagFullMode == "KillAll" then
+    BagModeBtn.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
+    BagModeBtn.Text = "СУМКА: KILL ALL"
+elseif SETTINGS.BagFullMode == "AFK" then
+    BagModeBtn.BackgroundColor3 = Color3.fromRGB(140, 90, 210)
+    BagModeBtn.Text = "СУМКА: AFK"
+else
+    BagModeBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
+    BagModeBtn.Text = "СУМКА: РЕСЕТ"
+end
 BagModeBtn.TextColor3 = Color3.new(1, 1, 1)
 BagModeBtn.Font = Enum.Font.GothamSemibold
 BagModeBtn.TextSize = 12
@@ -1856,13 +1864,18 @@ BindClick(GameModeBtn, function()
     UpdateGuiSizes()
 end)
 
--- Переключение действия при полной сумке: РЕСЕТ / KILL ALL
+-- Переключение действия при полной сумке: РЕСЕТ -> KILL ALL -> AFK -> РЕСЕТ
 BindClick(BagModeBtn, function()
     if SETTINGS.BagFullMode == "Reset" then
         SETTINGS.BagFullMode = "KillAll"
         BagModeBtn.Text = "СУМКА: KILL ALL"
         BagModeBtn.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
         UpdateStatus("Сумка полна: Kill All финальной цели", Color3.fromRGB(255, 80, 80))
+    elseif SETTINGS.BagFullMode == "KillAll" then
+        SETTINGS.BagFullMode = "AFK"
+        BagModeBtn.Text = "СУМКА: AFK"
+        BagModeBtn.BackgroundColor3 = Color3.fromRGB(140, 90, 210)
+        UpdateStatus("Сумка полна: AFK (бездействие)", Color3.fromRGB(170, 130, 255))
     else
         SETTINGS.BagFullMode = "Reset"
         BagModeBtn.Text = "СУМКА: РЕСЕТ"
@@ -2348,6 +2361,12 @@ local function ActionState()
             -- Режим Kill All: достаём нож и через TurboKill добиваем оставшуюся цель, забирая победу
             KillFinalTarget()
             task.wait(0.5)
+            BagIsFull = false
+            ChangeState(State.WaitingForRoundEnd)
+        elseif SETTINGS.BagFullMode == "AFK" then
+            -- Режим AFK: не делаем ресет и не убиваем игроков, просто ничего не делаем и ждём окончания раунда
+            UnequipKnife()
+            UpdateStatus("Сумка полна: AFK (ожидание)", Color3.fromRGB(170, 130, 255))
             BagIsFull = false
             ChangeState(State.WaitingForRoundEnd)
         else
