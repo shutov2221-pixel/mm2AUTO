@@ -1433,7 +1433,7 @@ local TitleLabel = Instance.new("TextLabel", TitleBar)
 TitleLabel.Size = UDim2.new(1, -40, 1, 0)
 TitleLabel.Position = UDim2.new(0, 12, 0, 0)
 TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "MM2 AIO SCRIPT [TURBO]2"
+TitleLabel.Text = "MM2 AIO SCRIPT [TURBO]11"
 TitleLabel.TextColor3 = Color3.new(1, 1, 1)
 TitleLabel.Font = Enum.Font.GothamBold
 TitleLabel.TextSize = 14
@@ -1658,21 +1658,23 @@ DualRow.Name = "DualRow"
 DualRow.Size = UDim2.new(1, 0, 0, 35)
 DualRow.BackgroundTransparency = 1
 
--- Кнопка действия при полной сумке: РЕСЕТ / KILL ALL
+-- Кнопка действия при полной сумке: РЕСЕТ / KILL ALL /AFK
 local BagModeBtn = Instance.new("TextButton", DualRow)
 BagModeBtn.Name = "BagModeBtn"
 BagModeBtn.Size = UDim2.new(0.5, -3, 1, 0)
 BagModeBtn.Position = UDim2.new(0, 0, 0, 0)
+local initialBagColor = Color3.fromRGB(60, 60, 70)
+local initialBagText = "СУМКА: РЕСЕТ"
 if SETTINGS.BagFullMode == "KillAll" then
-    BagModeBtn.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
-    BagModeBtn.Text = "СУМКА: KILL ALL"
+    initialBagColor = Color3.fromRGB(180, 40, 40)
+    initialBagText = "СУМКА: KILL ALL"
 elseif SETTINGS.BagFullMode == "AFK" then
-    BagModeBtn.BackgroundColor3 = Color3.fromRGB(150, 40, 180)
-    BagModeBtn.Text = "СУМКА: АФК"
-else
-    BagModeBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
-    BagModeBtn.Text = "СУМКА: РЕСЕТ"
+    initialBagColor = Color3.fromRGB(45, 125, 245)
+    initialBagText = "СУМКА: AFK"
 end
+
+BagModeBtn.BackgroundColor3 = initialBagColor
+BagModeBtn.Text = initialBagText
 BagModeBtn.TextColor3 = Color3.new(1, 1, 1)
 BagModeBtn.Font = Enum.Font.GothamSemibold
 BagModeBtn.TextSize = 12
@@ -1864,13 +1866,18 @@ BindClick(GameModeBtn, function()
     UpdateGuiSizes()
 end)
 
--- Переключение действия при полной сумке: РЕСЕТ / KILL ALL
+-- Переключение действия при полной сумке: РЕСЕТ / KILL ALL / AFK
 BindClick(BagModeBtn, function()
     if SETTINGS.BagFullMode == "Reset" then
         SETTINGS.BagFullMode = "KillAll"
         BagModeBtn.Text = "СУМКА: KILL ALL"
         BagModeBtn.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
         UpdateStatus("Сумка полна: Kill All финальной цели", Color3.fromRGB(255, 80, 80))
+    elseif SETTINGS.BagFullMode == "KillAll" then
+        SETTINGS.BagFullMode = "AFK"
+        BagModeBtn.Text = "СУМКА: AFK"
+        BagModeBtn.BackgroundColor3 = Color3.fromRGB(45, 125, 245)
+        UpdateStatus("Сумка полна: AFK режим", Color3.fromRGB(120, 200, 255))
     else
         SETTINGS.BagFullMode = "Reset"
         BagModeBtn.Text = "СУМКА: РЕСЕТ"
@@ -2353,18 +2360,28 @@ local function ActionState()
     -- 3. Действия при наполнении сумки или завершении раунда
     if BagIsFull then
         if SETTINGS.BagFullMode == "KillAll" then
-            -- Режим Kill All: достаём нож и через TurboKill добиваем оставшуюся цель, забирая победу
+            -- Режим Kill All: достаём нож и добиваем цель
             KillFinalTarget()
             task.wait(0.5)
             BagIsFull = false
             ChangeState(State.WaitingForRoundEnd)
         elseif SETTINGS.BagFullMode == "AFK" then
-            -- Режим АФК: ничего не делаем, прячем нож и ждём естественного окончания раунда
-            UpdateStatus("Сумка полна: АФК. Ждём окончания раунда...", Color3.fromRGB(200, 150, 255))
+            -- Режим AFK: зависаем на месте и ждём завершения раунда без смертей и убийств
+            UpdateStatus("Сумка полна: AFK (ожидание конца раунда)", Color3.fromRGB(120, 200, 255))
             UnequipKnife()
+            
+            local char = rt:Character()
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if hum then hum.PlatformStand = false end
+            
+            while not IsTerminated and RoundInProgress() and rt:CheckIfPlayerWasInARound() and SETTINGS.AutoFarmEnabled do
+                task.wait(0.5)
+            end
+            
+            BagIsFull = false
             ChangeState(State.WaitingForRoundEnd)
         else
-            -- Режим Reset: делаем сброс персонажа (BreakJoints). В живых остаётся только твинк/соперник
+            -- Режим Reset: делаем сброс персонажа
             UpdateStatus("Сумка полна: Сброс персонажа", Color3.fromRGB(200, 200, 200))
             ChangeState(State.WaitingForRoundEnd)
             local char = rt:Character()
@@ -2382,8 +2399,6 @@ local function ActionState()
     else
         ChangeState(State.WaitingForRoundEnd)
     end
-end
-
 local function WaitingForRound()
     Working = false
     BagIsFull = false
