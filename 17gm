@@ -1,6 +1,6 @@
 --!strict
 -- =====================================================================
--- 0.0 MM2 AUTO-FARM & ASSASSIN KILLER [MODERNIZED TURBO HYBRID]
+-- MM2 AUTO-FARM & ASSASSIN KILLER [MODERNIZED TURBO HYBRID]
 -- 1. Режимы зачистки: С ТВИНКОМ (остановка на твинке) / СОЛО (остановка при 2 игроках).
 -- 2. TurboKill: Двойной импульс touchinterest по хитбоксу без телепортов и зависаний.
 -- 3. Реактивный перехват ChangeTarget и RoundEndFade (0 мс задержки) + UI Watchdog.
@@ -59,7 +59,7 @@ local SETTINGS = {
     RoundMode = (initialProfile and (initialProfile.RoundMode == "Classic" or initialProfile.RoundMode == "Assassin") and initialProfile.RoundMode) or "Assassin",
     TwinName = initialSavedTwin,
     TwinAvoidEnabled = true, -- Умное разделение зон фарма с твинком (без гонок за одной монетой)
-    TwinAvoidRadius = 60, -- Расширенная сфера влияния твинка (студы)
+    TwinAvoidRadius = 30, -- Компактная сфера влияния твинка (студы)
     UnderfloorOffset = 3.8 -- Смещение под карту (студы ниже монеты)
 }
 
@@ -610,7 +610,7 @@ local function GetNearestCoin(): Instance?
     local fallbackCoin = nil
     local fallbackDist = math.huge
 
-    local avoidRadius = SETTINGS.TwinAvoidRadius or 60
+    local avoidRadius = SETTINGS.TwinAvoidRadius or 30
 
     for coin, _ in pairs(rt.cachedCoins) do
         if coin and coin.Parent and not isCoinTouched(coin) then
@@ -623,21 +623,24 @@ local function GetNearestCoin(): Instance?
                 fallbackCoin = coin
             end
 
-            -- 3-уровневая проверка принадлежности монеты твинку:
+            -- Проверка принадлежности монеты твинку (сокращенные радиусы + защита ближней зоны)
             local isTwinZone = false
             if twinPos then
-                local twinDist = (coinPos - twinPos).Magnitude
-                local predDist = twinPredPos and (coinPos - twinPredPos).Magnitude or math.huge
+                -- Если монета в пределах 12 студов от нас — забираем без уступок
+                if myDist > 12 then
+                    local twinDist = (coinPos - twinPos).Magnitude
+                    local predDist = twinPredPos and (coinPos - twinPredPos).Magnitude or math.huge
 
-                -- 1) Монета находится в радиусе 60 студов вокруг твинка
-                -- 2) Монета лежит прямо по курсу полета твинка (в радиусе 35 студов от упрежденной точки)
-                -- 3) Твинк строго ближе к этой монете, чем мы (чистая диаграмма Вороного)
-                -- 4) При одинаковом расстоянии тай-брейкер по никнейму исключает одновременный выбор
-                if (twinDist < avoidRadius)
-                    or (predDist < 35)
-                    or (twinDist < myDist)
-                    or (twinDist == myDist and twinPlr and LocalPlayer.Name < twinPlr.Name) then
-                    isTwinZone = true
+                    -- 1) Монета в непосредственном радиусе твинка (30 студов)
+                    -- 2) Монета на пути полета твинка (в радиусе 18 студов от вектора)
+                    -- 3) Твинк строго ближе к этой монете, чем мы (диаграмма Вороного)
+                    -- 4) При равном расстоянии тай-брейкер по имени
+                    if (twinDist < avoidRadius)
+                        or (predDist < 18)
+                        or (twinDist < myDist)
+                        or (twinDist == myDist and twinPlr and LocalPlayer.Name < twinPlr.Name) then
+                        isTwinZone = true
+                    end
                 end
             end
 
