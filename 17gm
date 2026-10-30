@@ -1,6 +1,6 @@
 --!strict
 -- =====================================================================
--- MM2 AUTO-FARM & ASSASSIN KILLER [MODERNIZED TURBO HYBRID]
+-- 0.0 MM2 AUTO-FARM & ASSASSIN KILLER [MODERNIZED TURBO HYBRID]
 -- 1. Режимы зачистки: С ТВИНКОМ (остановка на твинке) / СОЛО (остановка при 2 игроках).
 -- 2. TurboKill: Двойной импульс touchinterest по хитбоксу без телепортов и зависаний.
 -- 3. Реактивный перехват ChangeTarget и RoundEndFade (0 мс задержки) + UI Watchdog.
@@ -2123,11 +2123,7 @@ end
 
 -- === СВЕРХБЫСТРАЯ ПРОВЕРКА УДАЛЕНИЯ МОНЕТЫ (PING-SYNC) ===
 local function isCoinCollectedByServer(coin: Instance?, transmitter: Instance?): boolean
-    if not coin or coin.Parent == nil then return true end
-    if transmitter and transmitter.Parent == nil then return true end
-    if not coin:IsDescendantOf(Workspace) then return true end
-    if not transmitter and not coin:FindFirstChildWhichIsA("TouchTransmitter") then return true end
-    return false
+    return not coin or coin.Parent == nil or (transmitter and transmitter.Parent == nil)
 end
 
 -- === ПЕРЕДВИЖЕНИЕ ДЛЯ СБОРА МОНЕТ (ПОД КАРТОЙ) ===
