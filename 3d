@@ -12,6 +12,12 @@ local PointA: Vector3? = nil
 local PointB: Vector3? = nil
 local VisualBox: Part? = nil
 
+-- Круговая подсветка
+local CircleCenter: Vector3? = nil
+local CircleDiameter: number = 20
+local CircleMode: string = "D" -- "D" для Diameter, "R" для Radius
+local VisualCircle: Part? = nil
+
 -- Накопитель ВСЕХ логов скрипта для буфера обмена
 local allLogs = {}
 
@@ -32,8 +38,8 @@ ScreenGui.Name = "MM2_Region_Scanner_3D"
 ScreenGui.Parent = GetSafeGuiParent()
 ScreenGui.ResetOnSpawn = false
 
-local EXPANDED_SIZE = UDim2.new(0, 360, 0, 375)
-local COLLAPSED_SIZE = UDim2.new(0, 360, 0, 144)
+local EXPANDED_SIZE = UDim2.new(0, 360, 0, 415)
+local COLLAPSED_SIZE = UDim2.new(0, 360, 0, 206)
 
 local MainFrame = Instance.new("Frame", ScreenGui)
 MainFrame.Size = EXPANDED_SIZE
@@ -140,6 +146,101 @@ local function UpdateVisualBox()
     VisualBox.Position = center
 end
 
+-- Вспомогательная функция определения уровня земли под персонажем
+local function GetGroundPosition(pos: Vector3): Vector3
+    local char = LocalPlayer.Character
+    local rayParams = RaycastParams.new()
+    local ignoreList = {}
+    if char then table.insert(ignoreList, char) end
+    if VisualBox then table.insert(ignoreList, VisualBox) end
+    if VisualCircle then table.insert(ignoreList, VisualCircle) end
+    rayParams.FilterDescendantsInstances = ignoreList
+    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+
+    local hit = Workspace:Raycast(pos, Vector3.new(0, -25, 0), rayParams)
+    if hit then
+        return Vector3.new(pos.X, hit.Position.Y, pos.Z)
+    end
+    return Vector3.new(pos.X, pos.Y - 2.8, pos.Z)
+end
+
+-- Обновление круговой визуализации
+local function UpdateVisualCircle()
+    if not CircleCenter then return end
+    local currentDiameter = (CircleMode == "D") and CircleDiameter or (CircleDiameter * 2)
+
+    if not VisualCircle or not VisualCircle.Parent then
+        VisualCircle = Instance.new("Part")
+        VisualCircle.Name = "ScannerVisualCircle"
+        VisualCircle.Shape = Enum.PartType.Cylinder
+        VisualCircle.Anchored = true
+        VisualCircle.CanCollide = false
+        VisualCircle.CanTouch = false
+        VisualCircle.CanQuery = false
+        VisualCircle.CastShadow = false
+        VisualCircle.Material = Enum.Material.Neon
+        VisualCircle.Color = Color3.fromRGB(0, 220, 255)
+        VisualCircle.Transparency = 0.65
+        VisualCircle.Parent = Workspace
+
+        -- Центральная точка-маркер
+        local marker = Instance.new("Part")
+        marker.Name = "CenterMarker"
+        marker.Shape = Enum.PartType.Ball
+        marker.Size = Vector3.new(0.6, 0.6, 0.6)
+        marker.Color = Color3.fromRGB(255, 230, 80)
+        marker.Material = Enum.Material.Neon
+        marker.Anchored = true
+        marker.CanCollide = false
+        marker.CanTouch = false
+        marker.CanQuery = false
+        marker.CastShadow = false
+        marker.Parent = VisualCircle
+
+        -- 3D информационная плашка над кругом
+        local bbg = Instance.new("BillboardGui")
+        bbg.Name = "CircleInfoGui"
+        bbg.Size = UDim2.new(0, 140, 0, 24)
+        bbg.StudsOffset = Vector3.new(0, 2.2, 0)
+        bbg.AlwaysOnTop = true
+        bbg.Adornee = marker
+        bbg.Parent = VisualCircle
+
+        local bbgLabel = Instance.new("TextLabel", bbg)
+        bbgLabel.Name = "Label"
+        bbgLabel.Size = UDim2.new(1, 0, 1, 0)
+        bbgLabel.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+        bbgLabel.BackgroundTransparency = 0.25
+        bbgLabel.TextColor3 = Color3.fromRGB(100, 240, 255)
+        bbgLabel.Font = Enum.Font.GothamBold
+        bbgLabel.TextSize = 11
+        Instance.new("UICorner", bbgLabel).CornerRadius = UDim.new(0, 4)
+    end
+
+    local thickness = 0.25
+    VisualCircle.Size = Vector3.new(thickness, currentDiameter, currentDiameter)
+    VisualCircle.CFrame = CFrame.new(CircleCenter.X, CircleCenter.Y + (thickness / 2), CircleCenter.Z) * CFrame.Angles(0, 0, math.rad(90))
+
+    local marker = VisualCircle:FindFirstChild("CenterMarker")
+    if marker and marker:IsA("BasePart") then
+        marker.Position = CircleCenter + Vector3.new(0, 0.3, 0)
+    end
+
+    local bbg = VisualCircle:FindFirstChild("CircleInfoGui")
+    local bbgLabel = bbg and bbg:FindFirstChild("Label")
+    if bbgLabel and bbgLabel:IsA("TextLabel") then
+        bbgLabel.Text = string.format("⭕ Диам: %d ст. (R: %g)", currentDiameter, currentDiameter / 2)
+    end
+end
+
+local function ClearVisualCircle()
+    CircleCenter = nil
+    if VisualCircle then
+        pcall(function() VisualCircle:Destroy() end)
+        VisualCircle = nil
+    end
+end
+
 -- Кнопки
 local BtnA = Instance.new("TextButton", MainFrame)
 BtnA.Size = UDim2.new(0.48, -10, 0, 30)
@@ -224,10 +325,66 @@ BtnTestVote.Font = Enum.Font.GothamBold
 BtnTestVote.TextSize = 10
 Instance.new("UICorner", BtnTestVote).CornerRadius = UDim.new(0, 6)
 
+-- Ряд 5: Круговая подсветка области со счетчиком стадов
+local BtnCircle = Instance.new("TextButton", MainFrame)
+BtnCircle.Name = "BtnCircle"
+BtnCircle.Size = UDim2.new(0, 115, 0, 28)
+BtnCircle.Position = UDim2.new(0, 10, 0, 170)
+BtnCircle.BackgroundColor3 = Color3.fromRGB(0, 160, 180)
+BtnCircle.Text = "⭕ КРУГ"
+BtnCircle.TextColor3 = Color3.new(1, 1, 1)
+BtnCircle.Font = Enum.Font.GothamBold
+BtnCircle.TextSize = 11
+Instance.new("UICorner", BtnCircle).CornerRadius = UDim.new(0, 6)
+
+local BtnDecCircle = Instance.new("TextButton", MainFrame)
+BtnDecCircle.Name = "BtnDecCircle"
+BtnDecCircle.Size = UDim2.new(0, 28, 0, 28)
+BtnDecCircle.Position = UDim2.new(0, 129, 0, 170)
+BtnDecCircle.BackgroundColor3 = Color3.fromRGB(55, 60, 75)
+BtnDecCircle.Text = "−"
+BtnDecCircle.TextColor3 = Color3.new(1, 1, 1)
+BtnDecCircle.Font = Enum.Font.GothamBold
+BtnDecCircle.TextSize = 14
+Instance.new("UICorner", BtnDecCircle).CornerRadius = UDim.new(0, 6)
+
+local CircleValBtn = Instance.new("TextButton", MainFrame)
+CircleValBtn.Name = "CircleValBtn"
+CircleValBtn.Size = UDim2.new(0, 104, 0, 28)
+CircleValBtn.Position = UDim2.new(0, 161, 0, 170)
+CircleValBtn.BackgroundColor3 = Color3.fromRGB(22, 24, 30)
+CircleValBtn.Text = "20 ст. (R: 10)"
+CircleValBtn.TextColor3 = Color3.fromRGB(100, 220, 255)
+CircleValBtn.Font = Enum.Font.GothamBold
+CircleValBtn.TextSize = 10
+Instance.new("UICorner", CircleValBtn).CornerRadius = UDim.new(0, 6)
+
+local BtnIncCircle = Instance.new("TextButton", MainFrame)
+BtnIncCircle.Name = "BtnIncCircle"
+BtnIncCircle.Size = UDim2.new(0, 28, 0, 28)
+BtnIncCircle.Position = UDim2.new(0, 269, 0, 170)
+BtnIncCircle.BackgroundColor3 = Color3.fromRGB(55, 60, 75)
+BtnIncCircle.Text = "+"
+BtnIncCircle.TextColor3 = Color3.new(1, 1, 1)
+BtnIncCircle.Font = Enum.Font.GothamBold
+BtnIncCircle.TextSize = 14
+Instance.new("UICorner", BtnIncCircle).CornerRadius = UDim.new(0, 6)
+
+local BtnClearCircle = Instance.new("TextButton", MainFrame)
+BtnClearCircle.Name = "BtnClearCircle"
+BtnClearCircle.Size = UDim2.new(0, 49, 0, 28)
+BtnClearCircle.Position = UDim2.new(0, 301, 0, 170)
+BtnClearCircle.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
+BtnClearCircle.Text = "✕"
+BtnClearCircle.TextColor3 = Color3.new(1, 1, 1)
+BtnClearCircle.Font = Enum.Font.GothamBold
+BtnClearCircle.TextSize = 12
+Instance.new("UICorner", BtnClearCircle).CornerRadius = UDim.new(0, 6)
+
 -- Лог панель
 local LogContainer = Instance.new("ScrollingFrame", MainFrame)
-LogContainer.Size = UDim2.new(1, -20, 1, -180)
-LogContainer.Position = UDim2.new(0, 10, 0, 172)
+LogContainer.Size = UDim2.new(1, -20, 1, -212)
+LogContainer.Position = UDim2.new(0, 10, 0, 204)
 LogContainer.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
 LogContainer.ScrollBarThickness = 4
 LogContainer.CanvasSize = UDim2.new(0, 0, 0, 0)
@@ -280,6 +437,17 @@ CollapseBtn.MouseButton1Click:Connect(function()
     end
 end)
 
+-- Обновление текста лейбла круга в GUI
+local function UpdateCircleGuiLabel()
+    local currentDiameter = (CircleMode == "D") and CircleDiameter or (CircleDiameter * 2)
+    local currentRadius = (CircleMode == "D") and (CircleDiameter / 2) or CircleDiameter
+    if CircleMode == "D" then
+        CircleValBtn.Text = string.format("%d ст. (R:%g)", CircleDiameter, currentRadius)
+    else
+        CircleValBtn.Text = string.format("R: %d ст. (D:%d)", CircleDiameter, currentDiameter)
+    end
+end
+
 -- Функция сброса выделенной области
 local function ResetSelection()
     PointA = nil
@@ -288,10 +456,13 @@ local function ResetSelection()
         pcall(function() VisualBox:Destroy() end)
         VisualBox = nil
     end
+    ClearVisualCircle()
     BtnA.BackgroundColor3 = Color3.fromRGB(50, 150, 200)
     BtnB.BackgroundColor3 = Color3.fromRGB(150, 50, 200)
     BtnA.Text = "ТОЧКА A"
     BtnB.Text = "ТОЧКА B"
+    BtnCircle.BackgroundColor3 = Color3.fromRGB(0, 160, 180)
+    BtnCircle.Text = "⭕ КРУГ"
 end
 
 ResetBtn.MouseButton1Click:Connect(function()
@@ -372,6 +543,67 @@ CopyBtn.MouseButton1Click:Connect(function()
     task.wait(1.5)
     CopyBtn.Text = "КОПИРОВАТЬ"
     CopyBtn.BackgroundColor3 = Color3.fromRGB(220, 150, 40)
+end)
+
+-- Управление круговой подсветкой
+BtnCircle.MouseButton1Click:Connect(function()
+    local char = LocalPlayer.Character
+    local hrp = char and (char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart)
+    if not char or not hrp then
+        AddLog("Персонаж или HumanoidRootPart не найден!", Color3.fromRGB(255, 100, 100))
+        return
+    end
+
+    local groundPos = GetGroundPosition(hrp.Position)
+    CircleCenter = groundPos
+    UpdateVisualCircle()
+
+    BtnCircle.BackgroundColor3 = Color3.fromRGB(45, 180, 90)
+    BtnCircle.Text = "⭕ КРУГ ✓"
+
+    local curDiam = (CircleMode == "D") and CircleDiameter or (CircleDiameter * 2)
+    AddLog(string.format("Круг установлен! Позиция: (%.1f, %.1f, %.1f) | Диам: %d ст. (R: %g)", 
+        groundPos.X, groundPos.Y, groundPos.Z, curDiam, curDiam / 2), Color3.fromRGB(100, 240, 255))
+end)
+
+BtnDecCircle.MouseButton1Click:Connect(function()
+    if CircleDiameter > 2 then
+        CircleDiameter = CircleDiameter - 2
+        UpdateCircleGuiLabel()
+        if VisualCircle and CircleCenter then
+            UpdateVisualCircle()
+        end
+        local curDiam = (CircleMode == "D") and CircleDiameter or (CircleDiameter * 2)
+        AddLog(string.format("Диаметр круга: %d ст. (Радиус: %g ст.)", curDiam, curDiam / 2), Color3.fromRGB(180, 180, 220))
+    end
+end)
+
+BtnIncCircle.MouseButton1Click:Connect(function()
+    if CircleDiameter < 500 then
+        CircleDiameter = CircleDiameter + 2
+        UpdateCircleGuiLabel()
+        if VisualCircle and CircleCenter then
+            UpdateVisualCircle()
+        end
+        local curDiam = (CircleMode == "D") and CircleDiameter or (CircleDiameter * 2)
+        AddLog(string.format("Диаметр круга: %d ст. (Радиус: %g ст.)", curDiam, curDiam / 2), Color3.fromRGB(180, 180, 220))
+    end
+end)
+
+CircleValBtn.MouseButton1Click:Connect(function()
+    CircleMode = (CircleMode == "D") and "R" or "D"
+    UpdateCircleGuiLabel()
+    if VisualCircle and CircleCenter then
+        UpdateVisualCircle()
+    end
+    AddLog("Режим круга: " .. (CircleMode == "D" and "Диаметр (D)" or "Радиус (R)"), Color3.fromRGB(200, 200, 255))
+end)
+
+BtnClearCircle.MouseButton1Click:Connect(function()
+    ClearVisualCircle()
+    BtnCircle.BackgroundColor3 = Color3.fromRGB(0, 160, 180)
+    BtnCircle.Text = "⭕ КРУГ"
+    AddLog("Круговая подсветка убрана!", Color3.fromRGB(255, 160, 160))
 end)
 
 ScanBtn.MouseButton1Click:Connect(function()
