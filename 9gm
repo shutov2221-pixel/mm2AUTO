@@ -2108,13 +2108,12 @@ if initialProfile then
     end
 end
 
--- === ПРОВЕРКА УДАЛЕНИЯ МОНЕТЫ (PING-SYNC) ===
-local function isCoinCollectedByServer(coin)
-    if not coin then return true end
-    if coin.Parent == nil then return true end
+-- === СВЕРХБЫСТРАЯ ПРОВЕРКА УДАЛЕНИЯ МОНЕТЫ (PING-SYNC) ===
+local function isCoinCollectedByServer(coin: Instance?, transmitter: Instance?): boolean
+    if not coin or coin.Parent == nil then return true end
+    if transmitter and transmitter.Parent == nil then return true end
     if not coin:IsDescendantOf(Workspace) then return true end
-    if coin:IsA("BasePart") and coin.Transparency >= 1 and not coin:FindFirstChildWhichIsA("TouchTransmitter") then return true end
-    if not coin:FindFirstChildWhichIsA("TouchTransmitter") then return true end
+    if not transmitter and not coin:FindFirstChildWhichIsA("TouchTransmitter") then return true end
     return false
 end
 
@@ -2133,6 +2132,33 @@ local function moveToPositionPhysically(targetPosition, targetCoin, bv, bg)
         bg.CFrame = CFrame.new(startPos, lookAtPos) * CFrame.Angles(math.rad(-90), 0, 0)
     end
 
+    local transmitter = targetCoin and targetCoin:FindFirstChildWhichIsA("TouchTransmitter")
+    local isCollected = false
+
+    -- Реактивные слушатели мгновенного удаления (0 мс задержки по событию)
+    local cRemoved: RBXScriptConnection? = nil
+    local cTransmitter: RBXScriptConnection? = nil
+
+    local function markCollected()
+        isCollected = true
+    end
+
+    if targetCoin then
+        cRemoved = targetCoin.AncestryChanged:Connect(function(_, parent)
+            if not parent or not targetCoin:IsDescendantOf(Workspace) then
+                markCollected()
+            end
+        end)
+    end
+
+    if transmitter then
+        cTransmitter = transmitter.AncestryChanged:Connect(function(_, parent)
+            if not parent then
+                markCollected()
+            end
+        end)
+    end
+
     local flyStart = tick()
 
     while not IsTerminated and SETTINGS.AutoFarmEnabled and char and char.PrimaryPart and CurrentState == State.Action do
@@ -2140,7 +2166,8 @@ local function moveToPositionPhysically(targetPosition, targetCoin, bv, bg)
         local hum = char:FindFirstChildOfClass("Humanoid")
         if hum and hum.Health <= 0 then break end
 
-        if not targetCoin or not targetCoin.Parent or isCoinCollectedByServer(targetCoin) then
+        if isCollected or isCoinCollectedByServer(targetCoin, transmitter) or rt.touchedCoins[targetCoin] == "collected" then
+            isCollected = true
             break
         end
 
@@ -2150,26 +2177,38 @@ local function moveToPositionPhysically(targetPosition, targetCoin, bv, bg)
         if distance < 1.5 then
             bv.Velocity = Vector3.zero
 
-            local waitStart = tick()
-            local collected = false
+            local touchFn = firetouchtransmitter or firetouchinterest or (syn and syn.firetouchinterest)
+            local touchPart = char:FindFirstChild("Head") or hrp
 
-            repeat
-                local touchFn = firetouchtransmitter or firetouchinterest or (syn and syn.firetouchinterest)
+            -- Мгновенный импульс касания без искусственных задержек
+            if touchFn and targetCoin and targetCoin.Parent then
                 pcall(function()
-                    if targetCoin and targetCoin.Parent and touchFn then
-                        local touchPart = char:FindFirstChild("Head") or hrp
-                        touchFn(touchPart, targetCoin, 0)
-                        task.wait()
-                        touchFn(touchPart, targetCoin, 1)
-                        if touchPart ~= hrp then
-                            touchFn(hrp, targetCoin, 0)
-                            task.wait()
-                            touchFn(hrp, targetCoin, 1)
-                        end
+                    touchFn(touchPart, targetCoin, 0)
+                    touchFn(touchPart, targetCoin, 1)
+                    if touchPart ~= hrp then
+                        touchFn(hrp, targetCoin, 0)
+                        touchFn(hrp, targetCoin, 1)
                     end
                 end)
+            end
 
-                -- Удерживаем персонажа строго в подземной точке finalPosition под монетой (без всплывания наверх!)
+            -- Ожидание подтверждения от сервера: реактивно или на каждом кадре Heartbeat (без task.wait(0.05))
+            local waitStart = tick()
+            while (tick() - waitStart < 0.7) and not IsTerminated and SETTINGS.AutoFarmEnabled do
+                if isCollected or isCoinCollectedByServer(targetCoin, transmitter) or rt.touchedCoins[targetCoin] == "collected" then
+                    isCollected = true
+                    break
+                end
+
+                -- Если сервер не ответил за 0.2 сек (пинг/лаг), отправляем повторный импульс
+                if (tick() - waitStart > 0.2) and touchFn and targetCoin and targetCoin.Parent then
+                    pcall(function()
+                        touchFn(touchPart, targetCoin, 0)
+                        touchFn(touchPart, targetCoin, 1)
+                    end)
+                end
+
+                -- Удерживаем персонажа строго в подземной точке finalPosition под монетой
                 local toUnderPos = finalPosition - hrp.Position
                 if toUnderPos.Magnitude > 0.2 then
                     bv.Velocity = toUnderPos.Unit * math.min(5, SETTINGS.Speed)
@@ -2177,15 +2216,10 @@ local function moveToPositionPhysically(targetPosition, targetCoin, bv, bg)
                     bv.Velocity = Vector3.zero
                 end
 
-                if isCoinCollectedByServer(targetCoin) then
-                    collected = true
-                    break
-                end
+                RunService.Heartbeat:Wait()
+            end
 
-                task.wait(0.05)
-            until (tick() - waitStart > 1.5) or IsTerminated
-
-            return collected
+            break
         end
 
         local direction = (finalPosition - currentPos).Unit
@@ -2193,7 +2227,11 @@ local function moveToPositionPhysically(targetPosition, targetCoin, bv, bg)
 
         RunService.Heartbeat:Wait()
     end
-    return false
+
+    if cRemoved then cRemoved:Disconnect() end
+    if cTransmitter then cTransmitter:Disconnect() end
+
+    return isCollected or isCoinCollectedByServer(targetCoin, transmitter) or rt.touchedCoins[targetCoin] == "collected"
 end
 
 -- === ЛОГИКА СБОРА МОНЕТ ===
