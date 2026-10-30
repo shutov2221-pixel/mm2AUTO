@@ -54,7 +54,7 @@ local SETTINGS = {
     Speed = (initialProfile and typeof(initialProfile.Speed) == "number" and initialProfile.Speed) or 22,
     FpsCap = (initialProfile and typeof(initialProfile.FpsCap) == "number" and initialProfile.FpsCap) or 20,
     PotatoMode = (initialProfile and initialProfile.PotatoMode == true) or false,
-    BagFullMode = (initialProfile and (initialProfile.BagFullMode == "KillAll" or initialProfile.BagFullMode == "Reset") and initialProfile.BagFullMode) or "Reset",
+    BagFullMode = (initialProfile and (initialProfile.BagFullMode == "KillAll" or initialProfile.BagFullMode == "Reset" or initialProfile.BagFullMode == "AFK") and initialProfile.BagFullMode) or "Reset",
     GameMode = (initialProfile and (initialProfile.GameMode == "Twin" or initialProfile.GameMode == "Solo") and initialProfile.GameMode) or (initialSavedTwin ~= "" and "Twin" or "Solo"),
     RoundMode = (initialProfile and (initialProfile.RoundMode == "Classic" or initialProfile.RoundMode == "Assassin") and initialProfile.RoundMode) or "Assassin",
     TwinName = initialSavedTwin,
@@ -1663,8 +1663,16 @@ local BagModeBtn = Instance.new("TextButton", DualRow)
 BagModeBtn.Name = "BagModeBtn"
 BagModeBtn.Size = UDim2.new(0.5, -3, 1, 0)
 BagModeBtn.Position = UDim2.new(0, 0, 0, 0)
-BagModeBtn.BackgroundColor3 = (SETTINGS.BagFullMode == "KillAll") and Color3.fromRGB(180, 40, 40) or Color3.fromRGB(60, 60, 70)
-BagModeBtn.Text = (SETTINGS.BagFullMode == "KillAll") and "СУМКА: KILL ALL" or "СУМКА: РЕСЕТ"
+if SETTINGS.BagFullMode == "KillAll" then
+    BagModeBtn.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
+    BagModeBtn.Text = "СУМКА: KILL ALL"
+elseif SETTINGS.BagFullMode == "AFK" then
+    BagModeBtn.BackgroundColor3 = Color3.fromRGB(150, 40, 180)
+    BagModeBtn.Text = "СУМКА: АФК"
+else
+    BagModeBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
+    BagModeBtn.Text = "СУМКА: РЕСЕТ"
+end
 BagModeBtn.TextColor3 = Color3.new(1, 1, 1)
 BagModeBtn.Font = Enum.Font.GothamSemibold
 BagModeBtn.TextSize = 12
@@ -2349,6 +2357,11 @@ local function ActionState()
             KillFinalTarget()
             task.wait(0.5)
             BagIsFull = false
+            ChangeState(State.WaitingForRoundEnd)
+        elseif SETTINGS.BagFullMode == "AFK" then
+            -- Режим АФК: ничего не делаем, прячем нож и ждём естественного окончания раунда
+            UpdateStatus("Сумка полна: АФК. Ждём окончания раунда...", Color3.fromRGB(200, 150, 255))
+            UnequipKnife()
             ChangeState(State.WaitingForRoundEnd)
         else
             -- Режим Reset: делаем сброс персонажа (BreakJoints). В живых остаётся только твинк/соперник
