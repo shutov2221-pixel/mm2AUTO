@@ -5,14 +5,13 @@
 -- 2. TurboKill: Двойной импульс touchinterest по хитбоксу без телепортов и зависаний.
 -- 3. Реактивный перехват ChangeTarget и RoundEndFade (0 мс задержки) + UI Watchdog.
 -- 4. Переключатель действия при полной сумке: РЕСЕТ / KILL ALL.
--- 5. Авто-сохранение ника твинка в mm2_farm_exception.txt.
+-- 5. Сохранение всех настроек и ника твинка в profile.
 -- =====================================================================
 
 local HttpService = game:GetService("HttpService")
 
--- === СОХРАНЕНИЕ / ЗАГРУЗКА ПРОФИЛЯ И ТВИНКА ===
+-- === СОХРАНЕНИЕ / ЗАГРУЗКА ПРОФИЛЯ ===
 local PROFILE_FILE = "profile"
-local EXCEPTION_FILE = "mm2_farm_exception.txt"
 
 local function LoadProfile(): { [string]: any }?
     local rf = readfile or (syn and syn.readfile)
@@ -44,34 +43,8 @@ local function LoadProfile(): { [string]: any }?
     return nil
 end
 
-local function LoadTwinName(): string
-    local name = ""
-    local rf = readfile or (syn and syn.readfile)
-    local isf = isfile or (syn and syn.isfile)
-    if typeof(isf) == "function" and typeof(rf) == "function" then
-        local ok, exists = pcall(isf, EXCEPTION_FILE)
-        if ok and exists then
-            local readOk, content = pcall(rf, EXCEPTION_FILE)
-            if readOk and typeof(content) == "string" then
-                name = string.gsub(content, "^%s*(.-)%s*$", "%1")
-            end
-        end
-    end
-    return name
-end
-
-local function SaveTwinName(name: string): boolean
-    local wf = writefile or (syn and syn.writefile)
-    if typeof(wf) == "function" then
-        local cleanName = string.gsub(name, "^%s*(.-)%s*$", "%1")
-        local ok = pcall(wf, EXCEPTION_FILE, cleanName)
-        return ok
-    end
-    return false
-end
-
 local initialProfile = LoadProfile()
-local initialSavedTwin = (initialProfile and typeof(initialProfile.TwinName) == "string" and initialProfile.TwinName) or LoadTwinName()
+local initialSavedTwin = (initialProfile and typeof(initialProfile.TwinName) == "string" and initialProfile.TwinName) or ""
 
 -- === НАСТРОЙКИ СИСТЕМЫ И ПЕРЕМЕННЫЕ ===
 local SETTINGS = {
@@ -111,9 +84,6 @@ local function SaveProfile(statsVisible: boolean?): boolean
         end)
         if encodeOk and typeof(jsonStr) == "string" then
             local writeOk = pcall(wf, PROFILE_FILE, jsonStr)
-            if writeOk and SETTINGS.TwinName then
-                SaveTwinName(SETTINGS.TwinName)
-            end
             return writeOk
         end
     end
@@ -239,12 +209,11 @@ local function IsPlayerActuallyAlive(plr: Player): boolean
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     if not hum or hum.Health <= 0 then return false end
 
-    local serverDead = PlayerAliveCache[plr.Name]
-    if serverDead ~= nil then
-        return not serverDead
-    end
-
-    return plr:GetAttribute("Alive") == true
+    -- Строгая серверная проверка через PlayerAliveCache (синхронизируется через RoundStart / PlayerDataChanged):
+    -- nil   -> Не участвует в раунде (зритель / только зашёл на сервер)
+    -- true  -> Мёртв (Dead = true)
+    -- false -> Полноценно жив в раунде (Dead = false)
+    return PlayerAliveCache[plr.Name] == false
 end
 
 local function AutoFarmCleanUp()
@@ -510,10 +479,12 @@ function rt:CheckIfPlayerWasInARound(): boolean
     local char = LocalPlayer.Character
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     if not hum or hum.Health <= 0 then return false end
-    if PlayerAliveCache[LocalPlayer.Name] == false then
-        return true
-    end
-    return LocalPlayer:GetAttribute("Alive") == true
+
+    -- Строгая серверная проверка:
+    -- nil   -> Не в раунде (только зашли на сервер, зритель в лобби)
+    -- true  -> Мёртв (Dead = true)
+    -- false -> В раунде и жив (Dead = false)
+    return PlayerAliveCache[LocalPlayer.Name] == false
 end
 
 function rt:IsElite(): boolean
@@ -1462,7 +1433,7 @@ local TitleLabel = Instance.new("TextLabel", TitleBar)
 TitleLabel.Size = UDim2.new(1, -40, 1, 0)
 TitleLabel.Position = UDim2.new(0, 12, 0, 0)
 TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "MM2 AIO SCRIPT [TURBO]2"
+TitleLabel.Text = "MM2 AIO SCRIPT [TURBO]"
 TitleLabel.TextColor3 = Color3.new(1, 1, 1)
 TitleLabel.Font = Enum.Font.GothamBold
 TitleLabel.TextSize = 14
@@ -1851,16 +1822,16 @@ BindClick(VoteSpamBtn, function()
     end
 end)
 
--- Сохранение ника твинка
+-- Сохранение ника твинка в профиль
 BindClick(SaveTwinBtn, function()
     local name = TwinTextBox.Text or ""
     name = string.gsub(name, "^%s*(.-)%s*$", "%1")
     SETTINGS.TwinName = name
-    local ok = SaveTwinName(name)
+    local ok = SaveProfile(StatsPanel and StatsPanel.Visible)
     if ok then
-        UpdateStatus("Твинк сохранен: " .. (name ~= "" and name or "(пусто)"), Color3.fromRGB(100, 255, 100))
+        UpdateStatus("Твинк сохранен в profile: " .. (name ~= "" and name or "(пусто)"), Color3.fromRGB(100, 255, 100))
     else
-        UpdateStatus("Твинк задан (без записи на диск)", Color3.fromRGB(255, 200, 100))
+        UpdateStatus("Твинк задан (ошибка сохранения profile)", Color3.fromRGB(255, 200, 100))
     end
 end)
 
