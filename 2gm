@@ -204,16 +204,110 @@ end
 local PlayerRolesCache: { [string]: string } = {}
 local PlayerAliveCache: { [string]: boolean } = {} -- true = мертв, false = жив
 
+-- =====================================================================
+-- 100% ОПРЕДЕЛЕНИЕ НАХОЖДЕНИЯ В РАУНДЕ ПО ВИДИМОСТИ СУМКИ (2D UI SCAN)
+-- =====================================================================
+type BagTrackItem = {
+    bagFrame: GuiObject,
+    coinsLabel: TextLabel?
+}
+local TrackedBagItems: { BagTrackItem } = {}
+
+local function isBagActuallyVisible(bagFrame: GuiObject, coinsLabel: TextLabel?): boolean
+    if not bagFrame or not bagFrame.Parent then return false end
+    if not bagFrame.Visible then return false end
+    if coinsLabel and (not coinsLabel.Visible or coinsLabel.TextTransparency >= 1) then
+        return false
+    end
+    if bagFrame.AbsoluteSize.X <= 0 or bagFrame.AbsoluteSize.Y <= 0 then
+        return false
+    end
+
+    -- Проверка предков вплоть до ScreenGui
+    local curr: Instance? = bagFrame.Parent
+    while curr and curr:IsA("GuiObject") do
+        if not (curr :: GuiObject).Visible then
+            return false
+        end
+        if curr:IsA("CanvasGroup") and (curr :: CanvasGroup).GroupTransparency >= 1 then
+            return false
+        end
+        curr = curr.Parent
+    end
+    return true
+end
+
+local function IsBagVisible(): boolean
+    -- 1. Быстрая проверка по зарегистрированным фреймам сумок
+    for _, item in ipairs(TrackedBagItems) do
+        if item.bagFrame and item.bagFrame.Parent and isBagActuallyVisible(item.bagFrame, item.coinsLabel) then
+            return true
+        end
+    end
+
+    -- 2. Резервный динамический скан PlayerGui (на случай перезагрузки GUI или смены устройства)
+    local pGui = LocalPlayer:FindFirstChildOfClass("PlayerGui") or LocalPlayer:FindFirstChild("PlayerGui")
+    local mainGui = pGui and pGui:FindFirstChild("MainGUI")
+    if mainGui and mainGui:IsA("ScreenGui") and mainGui.Enabled then
+        -- Режим ПК / Планшет
+        local gameObj = mainGui:FindFirstChild("Game")
+        local gameBags = gameObj and gameObj:FindFirstChild("CoinBags")
+        local gameContainer = gameBags and gameBags:FindFirstChild("Container")
+        if gameContainer and gameObj:IsA("GuiObject") and gameObj.Visible and gameBags:IsA("GuiObject") and gameBags.Visible then
+            for _, bag in ipairs(gameContainer:GetChildren()) do
+                if bag:IsA("GuiObject") and bag.Visible and bag.AbsoluteSize.X > 0 and bag.AbsoluteSize.Y > 0 then
+                    local curFrame = bag:FindFirstChild("CurrencyFrame")
+                    local icon = curFrame and curFrame:FindFirstChild("Icon")
+                    local lbl = icon and icon:FindFirstChild("Coins") :: TextLabel?
+                    if isBagActuallyVisible(bag, lbl) then
+                        return true
+                    end
+                end
+            end
+        end
+
+        -- Режим Телефон (Dock)
+        local lobby = mainGui:FindFirstChild("Lobby")
+        local dock = lobby and lobby:FindFirstChild("Dock")
+        local dockBags = dock and dock:FindFirstChild("CoinBags")
+        local dockContainer = dockBags and dockBags:FindFirstChild("Container")
+        if dockContainer and lobby:IsA("GuiObject") and lobby.Visible and dock:IsA("GuiObject") and dock.Visible and dockBags:IsA("GuiObject") and dockBags.Visible then
+            for _, bag in ipairs(dockContainer:GetChildren()) do
+                if bag:IsA("GuiObject") and bag.Visible and bag.AbsoluteSize.X > 0 and bag.AbsoluteSize.Y > 0 then
+                    local curFrame = bag:FindFirstChild("CurrencyFrame")
+                    local icon = curFrame and curFrame:FindFirstChild("Icon")
+                    local lbl = icon and icon:FindFirstChild("Coins") :: TextLabel?
+                    if isBagActuallyVisible(bag, lbl) then
+                        return true
+                    end
+                end
+            end
+        end
+    end
+
+    return false
+end
+
 local function IsPlayerActuallyAlive(plr: Player): boolean
     local char = plr.Character
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     if not hum or hum.Health <= 0 then return false end
 
-    -- Строгая серверная проверка через PlayerAliveCache (синхронизируется через RoundStart / PlayerDataChanged):
+    -- Если это LocalPlayer, то реальная видимость сумки — 100% доказательство нахождения в раунде
+    if plr == LocalPlayer and IsBagVisible() then
+        return true
+    end
+
+    -- Серверная проверка через PlayerAliveCache (синхронизируется через RoundStart / PlayerDataChanged):
     -- nil   -> Не участвует в раунде (зритель / только зашёл на сервер)
     -- true  -> Мёртв (Dead = true)
     -- false -> Полноценно жив в раунде (Dead = false)
-    return PlayerAliveCache[plr.Name] == false
+    if PlayerAliveCache[plr.Name] == false then
+        return true
+    end
+
+    -- Резервный атрибут Alive
+    return plr:GetAttribute("Alive") == true
 end
 
 local function AutoFarmCleanUp()
