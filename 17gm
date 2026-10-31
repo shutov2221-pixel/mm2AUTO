@@ -292,13 +292,6 @@ local function PopulateCoins()
     rt.Added = rt.coinContainer.DescendantAdded:Connect(checkAndAdd)
 
     rt.coinRemovedConn = rt.coinContainer.ChildRemoved:Connect(function(child)
-        rt.cachedCoins[child] = nil
-        if child:IsA("Model") then
-            for _, p in ipairs(child:GetChildren()) do
-                rt.cachedCoins[p] = nil
-            end
-        end
-
         local coin = child
         local data = rt.touchedCoins[coin]
 
@@ -620,7 +613,7 @@ local function GetNearestCoin(): Instance?
     local avoidRadius = SETTINGS.TwinAvoidRadius or 30
 
     for coin, _ in pairs(rt.cachedCoins) do
-        if coin and rt.coinContainer and coin.Parent == rt.coinContainer and not isCoinTouched(coin) and coin:FindFirstChildWhichIsA("TouchTransmitter") then
+        if coin and coin.Parent and not isCoinTouched(coin) then
             local coinPos = coin.Position
             local myDist = (coinPos - myPos).Magnitude
 
@@ -2133,11 +2126,7 @@ end
 
 -- === СВЕРХБЫСТРАЯ ПРОВЕРКА УДАЛЕНИЯ МОНЕТЫ (PING-SYNC) ===
 local function isCoinCollectedByServer(coin: Instance?, transmitter: Instance?): boolean
-    if not coin or not rt or not rt.coinContainer then return true end
-    if coin.Parent ~= rt.coinContainer then return true end
-    if transmitter and transmitter.Parent ~= coin then return true end
-    if not coin:FindFirstChildWhichIsA("TouchTransmitter") then return true end
-    return false
+    return not coin or coin.Parent == nil or (transmitter and transmitter.Parent == nil)
 end
 
 -- === ПЕРЕДВИЖЕНИЕ ДЛЯ СБОРА МОНЕТ (ПОД КАРТОЙ) ===
@@ -2161,20 +2150,14 @@ local function moveToPositionPhysically(targetPosition, targetCoin, bv, bg)
     -- Реактивные слушатели мгновенного удаления (0 мс задержки по событию)
     local cRemoved: RBXScriptConnection? = nil
     local cTransmitter: RBXScriptConnection? = nil
-    local waitingThread: thread? = nil
 
     local function markCollected()
         isCollected = true
-        if cRemoved then cRemoved:Disconnect(); cRemoved = nil end
-        if cTransmitter then cTransmitter:Disconnect(); cTransmitter = nil end
-        if waitingThread and coroutine.status(waitingThread) == "suspended" then
-            task.spawn(waitingThread)
-        end
     end
 
     if targetCoin then
         cRemoved = targetCoin.AncestryChanged:Connect(function(_, parent)
-            if not parent or not targetCoin:IsDescendantOf(Workspace) or (rt.coinContainer and parent ~= rt.coinContainer) then
+            if not parent or not targetCoin:IsDescendantOf(Workspace) then
                 markCollected()
             end
         end)
@@ -2182,7 +2165,7 @@ local function moveToPositionPhysically(targetPosition, targetCoin, bv, bg)
 
     if transmitter then
         cTransmitter = transmitter.AncestryChanged:Connect(function(_, parent)
-            if not parent or parent ~= targetCoin then
+            if not parent then
                 markCollected()
             end
         end)
@@ -2195,7 +2178,6 @@ local function moveToPositionPhysically(targetPosition, targetCoin, bv, bg)
         local hum = char:FindFirstChildOfClass("Humanoid")
         if hum and hum.Health <= 0 then break end
 
-        -- Если монета собрана или украдена другим читером во время полета — мгновенный сброс (0 мс)
         if isCollected or isCoinCollectedByServer(targetCoin, transmitter) or rt.touchedCoins[targetCoin] == "collected" then
             isCollected = true
             break
@@ -2222,22 +2204,31 @@ local function moveToPositionPhysically(targetPosition, targetCoin, bv, bg)
                 end)
             end
 
-            -- Реактивное засыпание до подтверждения от сервера (0 мс задержки)
-            if not isCollected and not isCoinCollectedByServer(targetCoin, transmitter) then
-                waitingThread = coroutine.running()
+            -- Ожидание подтверждения от сервера: реактивно или на каждом кадре Heartbeat (без task.wait(0.05))
+            local waitStart = tick()
+            while (tick() - waitStart < 0.7) and not IsTerminated and SETTINGS.AutoFarmEnabled do
+                if isCollected or isCoinCollectedByServer(targetCoin, transmitter) or rt.touchedCoins[targetCoin] == "collected" then
+                    isCollected = true
+                    break
+                end
 
-                -- Защитный тайм-аут (максимум 0.35 сек на случай пинга)
-                local timeoutTask = task.delay(0.35, function()
-                    if waitingThread and coroutine.status(waitingThread) == "suspended" then
-                        task.spawn(waitingThread)
-                    end
-                end)
+                -- Если сервер не ответил за 0.2 сек (пинг/лаг), отправляем повторный импульс
+                if (tick() - waitStart > 0.2) and touchFn and targetCoin and targetCoin.Parent then
+                    pcall(function()
+                        touchFn(touchPart, targetCoin, 0)
+                        touchFn(touchPart, targetCoin, 1)
+                    end)
+                end
 
-                coroutine.yield()
-            end
+                -- Удерживаем персонажа строго в подземной точке finalPosition под монетой
+                local toUnderPos = finalPosition - hrp.Position
+                if toUnderPos.Magnitude > 0.2 then
+                    bv.Velocity = toUnderPos.Unit * math.min(5, SETTINGS.Speed)
+                else
+                    bv.Velocity = Vector3.zero
+                end
 
-            if not isCollected then
-                isCollected = isCoinCollectedByServer(targetCoin, transmitter)
+                RunService.Heartbeat:Wait()
             end
 
             break
