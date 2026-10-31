@@ -137,23 +137,32 @@ Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 5)
 
 -- Перетаскивание окна
 local dragging, dragStart, startPos
+local dragInputConn: RBXScriptConnection? = nil
 TitleBar.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
         dragging = true
         dragStart = input.Position
         startPos = MainFrame.Position
-        input.Changed:Connect(function()
-            if input.UserInputState == Enum.UserInputState.End then dragging = false end
+        if dragInputConn then dragInputConn:Disconnect() end
+        dragInputConn = input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+                if dragInputConn then
+                    dragInputConn:Disconnect()
+                    dragInputConn = nil
+                end
+            end
         end)
     end
 end)
 
-UserInputService.InputChanged:Connect(function(input)
+local dragChangeConn = UserInputService.InputChanged:Connect(function(input)
     if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
         local delta = input.Position - dragStart
         MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
     end
 end)
+table.insert(activeConnections, dragChangeConn)
 
 -- Информационная панель текущего состояния
 local StateInfoFrame = Instance.new("Frame")
@@ -582,6 +591,7 @@ local PlayerRolesCache: { [string]: string } = {}
 local PlayerAliveCache: { [string]: boolean } = {}
 local EndVoting: (reason: string?) -> () = function(_: string?) end
 local UpdateLocalPlayerDisplay: () -> () = function() end
+local ForceCheckMap: () -> () = function() end
 
 local function RegisterRemoteHook(name: string, callback: (...any) -> ())
     local re = FindRemoteEvent(name)
@@ -604,6 +614,7 @@ RegisterRemoteHook("RoleSelect", function(...)
     LblRoundStatus.Text = "Раунд: Выдача ролей (" .. tostring(role) .. ")"
     LblRoundStatus.TextColor3 = Color3.fromRGB(100, 220, 255)
     EndVoting("Выдача ролей (RoleSelect)")
+    ForceCheckMap()
     if role then
         PlayerRolesCache[LocalPlayer.Name] = tostring(role)
         UpdateLocalPlayerDisplay()
@@ -618,6 +629,7 @@ RegisterRemoteHook("RoundStart", function(...)
     LblRoundStatus.Text = "Раунд: ИДЁТ (" .. tostring(duration) .. "с)"
     LblRoundStatus.TextColor3 = Color3.fromRGB(100, 255, 120)
     EndVoting("Старт раунда (RoundStart)")
+    ForceCheckMap()
 
     if typeof(playersData) == "table" then
         for pName, pInfo in pairs(playersData) do
@@ -764,6 +776,7 @@ local CurrentMapInstance: Instance? = nil
 local CurrentCoinContainer: Instance? = nil
 local coinSpawnTracked = false
 local mapSpawnTick = 0
+local currentCoinCount = 0
 
 local function CheckCoinContainerCoins(container: Instance): number
     local count = 0
@@ -778,46 +791,43 @@ end
 local function HookCoinContainer(coinContainer: Instance)
     if CurrentCoinContainer == coinContainer then return end
     CurrentCoinContainer = coinContainer
-    local initialCount = CheckCoinContainerCoins(coinContainer)
-    if initialCount > 0 then
+    currentCoinCount = CheckCoinContainerCoins(coinContainer)
+    if currentCoinCount > 0 then
         coinSpawnTracked = true
     end
-    LblCoinsInfo.Text = string.format("Монеты: %d на карте", initialCount)
+    LblCoinsInfo.Text = string.format("Монеты: %d на карте", currentCoinCount)
 
     local spawnDelta = (mapSpawnTick > 0) and string.format("(через %.2fc после карты)", tick() - mapSpawnTick) or ""
-    Log(string.format("🟡 [CoinContainer] Обнаружен! Стартовое число монет: %d %s", initialCount, spawnDelta), "COIN")
+    Log(string.format("🟡 [CoinContainer] Обнаружен! Стартовое число монет: %d %s", currentCoinCount, spawnDelta), "COIN")
 
-    -- Отслеживаем добавление монет
+    -- Отслеживаем добавление монет инкрементно (без O(N^2) обхода дерева)
     local addConn = coinContainer.DescendantAdded:Connect(function(desc)
         if desc:IsA("TouchTransmitter") then
+            currentCoinCount = currentCoinCount + 1
             if not coinSpawnTracked then
                 coinSpawnTracked = true
                 local d = (mapSpawnTick > 0) and string.format("(через %.2fc после спавна карты)", tick() - mapSpawnTick) or ""
                 Log(string.format("✨ [МОНЕТЫ] НАЧАЛСЯ СПАВН МОНЕТ на карте! %s", d), "COIN")
             end
-            local cur = CheckCoinContainerCoins(coinContainer)
-            LblCoinsInfo.Text = string.format("Монеты: %d на карте", cur)
+            LblCoinsInfo.Text = string.format("Монеты: %d на карте", currentCoinCount)
         end
     end)
     table.insert(activeConnections, addConn)
 
-    -- Отслеживаем удаление монет (подбор)
+    -- Отслеживаем удаление монет (подбор) декрементно
     local remConn = coinContainer.ChildRemoved:Connect(function()
-        task.defer(function()
-            if coinContainer and coinContainer.Parent then
-                local cur = CheckCoinContainerCoins(coinContainer)
-                LblCoinsInfo.Text = string.format("Монеты: %d на карте", cur)
-            end
-        end)
+        currentCoinCount = math.max(0, currentCoinCount - 1)
+        LblCoinsInfo.Text = string.format("Монеты: %d на карте", currentCoinCount)
     end)
     table.insert(activeConnections, remConn)
 
-    -- Отслеживаем уничтожение контейнера
+    -- Отслеживаем уничтожение контейнера (защита от дубликатов лога)
     local ancConn = coinContainer.AncestryChanged:Connect(function(_, parent)
-        if not parent then
-            Log("❌ [CoinContainer] УДАЛЁН из Workspace!", "COIN")
+        if not parent and CurrentCoinContainer == coinContainer then
             CurrentCoinContainer = nil
+            currentCoinCount = 0
             coinSpawnTracked = false
+            Log("❌ [CoinContainer] УДАЛЁН из Workspace!", "COIN")
             LblCoinsInfo.Text = "Монеты: 0 (контейнер удален)"
         end
     end)
@@ -832,12 +842,26 @@ local function IsMapCandidate(child: Instance): boolean
     return true
 end
 
+local candidateConnections: { [Instance]: { RBXScriptConnection } } = {}
+
+local function DisconnectCandidate(child: Instance)
+    local conns = candidateConnections[child]
+    if conns then
+        for _, c in ipairs(conns) do
+            if c and c.Connected then pcall(function() c:Disconnect() end) end
+        end
+        candidateConnections[child] = nil
+    end
+end
+
 local function CleanupMap(child: Instance)
+    DisconnectCandidate(child)
     if CurrentMapInstance == child then
         local lifetime = (mapSpawnTick > 0) and string.format("(жила %.1fc)", tick() - mapSpawnTick) or ""
         Log(string.format("🧹 [КАРТА] ОЧИСТКА КАРТЫ: '%s' удалена из Workspace %s", child.Name, lifetime), "MAP")
         CurrentMapInstance = nil
         CurrentCoinContainer = nil
+        currentCoinCount = 0
         coinSpawnTracked = false
         mapSpawnTick = 0
         LblCurrentMap.Text = "Карта: (нет)"
@@ -903,13 +927,43 @@ local function InspectMapCandidate(child: Instance)
     local spawns = child:FindFirstChild("Spawns")
 
     if container or spawns then
+        DisconnectCandidate(child)
         RegisterMap(child, spawns, container)
-    else
-        -- Детали карты (Spawns, CoinContainer) могут реплицироваться чуть позже события ChildAdded
+        return
+    end
+
+    -- Если папки Spawns/CoinContainer ещё реплицируются по сети:
+    -- Подключаем мгновенный слушатель ChildAdded на модель-кандидат (без жесткого ограничения по времени)
+    if not candidateConnections[child] then
+        candidateConnections[child] = {}
+
+        local addConn = child.ChildAdded:Connect(function(newChild)
+            if newChild.Name == "Spawns" or newChild.Name == "CoinContainer" then
+                DisconnectCandidate(child)
+                if not isTerminated and child.Parent == Workspace and CurrentMapInstance ~= child then
+                    local s = (newChild.Name == "Spawns") and newChild or child:FindFirstChild("Spawns")
+                    local c = (newChild.Name == "CoinContainer") and newChild or child:FindFirstChild("CoinContainer")
+                    RegisterMap(child, s, c)
+                end
+            end
+        end)
+        table.insert(candidateConnections[child], addConn)
+        table.insert(activeConnections, addConn)
+
+        local ancConn = child.AncestryChanged:Connect(function(_, parent)
+            if not parent or parent ~= Workspace then
+                DisconnectCandidate(child)
+            end
+        end)
+        table.insert(candidateConnections[child], ancConn)
+        table.insert(activeConnections, ancConn)
+
+        -- Фоновое ожидание с увеличенным до 15 сек таймаутом на случай задержки сетевых пакетов
         task.spawn(function()
-            local foundSpawns = child:WaitForChild("Spawns", 3)
+            local foundSpawns = child:WaitForChild("Spawns", 15)
             local foundContainer = child:FindFirstChild("CoinContainer")
             if not isTerminated and child.Parent == Workspace and (foundSpawns or foundContainer) then
+                DisconnectCandidate(child)
                 if CurrentMapInstance ~= child then
                     RegisterMap(child, foundSpawns, foundContainer)
                 end
@@ -918,19 +972,27 @@ local function InspectMapCandidate(child: Instance)
     end
 end
 
+local function DoForceCheckMap()
+    if CurrentMapInstance and CurrentMapInstance.Parent == Workspace then return end
+    for _, ch in ipairs(Workspace:GetChildren()) do
+        if IsMapCandidate(ch) and CurrentMapInstance ~= ch then
+            InspectMapCandidate(ch)
+            if CurrentMapInstance then break end
+            -- Резерв: если раунд начат, а Spawns/CoinContainer ещё задерживаются,
+            -- любая модель-кандидат с деталями гарантированно является активной картой
+            if not CurrentMapInstance and ch:IsA("Model") and #ch:GetChildren() > 5 then
+                RegisterMap(ch, ch:FindFirstChild("Spawns"), ch:FindFirstChild("CoinContainer"))
+                break
+            end
+        end
+    end
+end
+ForceCheckMap = DoForceCheckMap
+
+-- Моментальная O(1) проверка карты: не сканируем Workspace:GetChildren() каждые 0.5с
 local function GetWorkspaceMap(): Instance?
     if CurrentMapInstance and CurrentMapInstance.Parent == Workspace then
         return CurrentMapInstance
-    end
-    for _, child in ipairs(Workspace:GetChildren()) do
-        if IsMapCandidate(child) then
-            local container = child:FindFirstChild("CoinContainer")
-            local spawns = child:FindFirstChild("Spawns")
-            if container or spawns then
-                RegisterMap(child, spawns, container)
-                return child
-            end
-        end
     end
     return nil
 end
@@ -995,15 +1057,38 @@ local function DoEndVoting(reason: string?)
 end
 EndVoting = DoEndVoting
 
+-- Кэш GUI и TextLabel для подиумов голосования (чтобы избежать рекурсивного сканирования каждые 0.5с)
+type PadCacheEntry = {
+    gui: Instance?,
+    textLabels: { TextLabel },
+}
+local padCache: { [Instance]: PadCacheEntry } = {}
+
 -- Проверка активности подиума голосования и извлечение данных с диагностикой метода скрытия
 local function GetPadVoteInfo(pad: Instance): (string?, number?, string)
-    local infoGui = pad:FindFirstChild("VoteInfoGui", true)
-    if not infoGui then
-        return nil, 0, "VoteInfoGui удалён (nil)"
+    local cached = padCache[pad]
+    local infoGui = cached and cached.gui
+
+    if not infoGui or not infoGui.Parent then
+        infoGui = pad:FindFirstChild("VoteInfoGui", true)
+        if not infoGui then
+            return nil, 0, "VoteInfoGui удалён (nil)"
+        end
+        local labels: { TextLabel } = {}
+        for _, desc in ipairs(infoGui:GetDescendants()) do
+            if desc:IsA("TextLabel") then
+                table.insert(labels, desc)
+            end
+        end
+        cached = {
+            gui = infoGui,
+            textLabels = labels,
+        }
+        padCache[pad] = cached
     end
 
     -- 1. Свойство Enabled у SurfaceGui/BillboardGui
-    if (infoGui:IsA("SurfaceGui") or infoGui:IsA("BillboardGui") or infoGui:IsA("ScreenGui")) and not infoGui.Enabled then
+    if (infoGui:IsA("SurfaceGui") or infoGui:IsA("BillboardGui") or infoGui:IsA("ScreenGui")) and not (infoGui :: any).Enabled then
         return nil, 0, "VoteInfoGui.Enabled = false"
     end
 
@@ -1012,8 +1097,8 @@ local function GetPadVoteInfo(pad: Instance): (string?, number?, string)
     local anyTextLabelFound = false
     local hiddenReason = "Нет видимых TextLabel"
 
-    for _, desc in ipairs(infoGui:GetDescendants()) do
-        if desc:IsA("TextLabel") then
+    for _, desc in ipairs(cached.textLabels) do
+        if desc.Parent then
             anyTextLabelFound = true
 
             if not desc.Visible then
@@ -1031,7 +1116,7 @@ local function GetPadVoteInfo(pad: Instance): (string?, number?, string)
                             hiddenReason = string.format("Родитель '%s' (%s).Visible = false", parent.Name, parent.ClassName)
                             break
                         end
-                        if parent:IsA("CanvasGroup") and parent.GroupTransparency >= 1 then
+                        if parent:IsA("CanvasGroup") and (parent :: CanvasGroup).GroupTransparency >= 1 then
                             isParentVisible = false
                             hiddenReason = string.format("CanvasGroup '%s'.GroupTransparency = 1", parent.Name)
                             break
@@ -1079,7 +1164,7 @@ local function HookVotePadEvents(pad: Instance, onStateChange: () -> ())
 
     local function TryHookGui(infoGui: Instance)
         if infoGui:IsA("SurfaceGui") or infoGui:IsA("BillboardGui") or infoGui:IsA("ScreenGui") then
-            local conn = infoGui:GetPropertyChangedSignal("Enabled"):Connect(function()
+            local conn = (infoGui :: any):GetPropertyChangedSignal("Enabled"):Connect(function()
                 if not isTerminated then
                     onStateChange()
                 end
@@ -1095,8 +1180,11 @@ local function HookVotePadEvents(pad: Instance, onStateChange: () -> ())
 
     local descConn = pad.DescendantAdded:Connect(function(desc)
         if desc.Name == "VoteInfoGui" then
+            padCache[pad] = nil
             TryHookGui(desc)
             onStateChange()
+        elseif desc:IsA("TextLabel") then
+            padCache[pad] = nil
         end
     end)
     table.insert(activeConnections, descConn)
@@ -1210,13 +1298,17 @@ local function DoUpdateLocalPlayerDisplay()
 end
 UpdateLocalPlayerDisplay = DoUpdateLocalPlayerDisplay
 
+type PlayerCardUI = {
+    card: Frame,
+    stroke: UIStroke,
+    statusIcon: TextLabel,
+    nameLabel: TextLabel,
+    subLabel: TextLabel,
+}
+local playerCardPool: { [string]: PlayerCardUI } = {}
+
 local function DoUpdatePlayersPanel()
     if not PlayersSideFrame.Visible then return end
-
-    -- Очищаем старые плашки
-    for _, child in ipairs(PlayersScroll:GetChildren()) do
-        if child:IsA("Frame") then child:Destroy() end
-    end
 
     local totalInRound = 0
     local aliveCount = 0
@@ -1230,6 +1322,9 @@ local function DoUpdatePlayersPanel()
     if #participantNames == 0 then
         LblPlayersSummary.Text = "В лобби: раунд не начат"
         LblPlayersSummary.TextColor3 = Color3.fromRGB(160, 160, 180)
+        for _, item in pairs(playerCardPool) do
+            item.card.Visible = false
+        end
         return
     end
 
@@ -1245,7 +1340,10 @@ local function DoUpdatePlayersPanel()
         return string.lower(a) < string.lower(b)
     end)
 
+    local activeNames: { [string]: boolean } = {}
+
     for idx, pName in ipairs(participantNames) do
+        activeNames[pName] = true
         totalInRound = totalInRound + 1
         local isDead = PlayerAliveCache[pName] == true
         if isDead then
@@ -1258,41 +1356,63 @@ local function DoUpdatePlayersPanel()
         local coins = PlayerCoinsCache[pName] or 0
         local isMe = (pName == LocalPlayer.Name)
 
-        local card = Instance.new("Frame")
-        card.Size = UDim2.new(1, -4, 0, 32)
-        card.BackgroundColor3 = isMe and Color3.fromRGB(24, 38, 52) or Color3.fromRGB(20, 22, 30)
-        card.BorderSizePixel = 0
-        card.LayoutOrder = idx
-        card.Parent = PlayersScroll
-        Instance.new("UICorner", card).CornerRadius = UDim.new(0, 5)
+        local item = playerCardPool[pName]
+        if not item or not item.card.Parent then
+            local card = Instance.new("Frame")
+            card.Size = UDim2.new(1, -4, 0, 32)
+            card.BorderSizePixel = 0
+            Instance.new("UICorner", card).CornerRadius = UDim.new(0, 5)
 
-        local stroke = Instance.new("UIStroke", card)
-        stroke.Thickness = 1
-        stroke.Color = isMe and Color3.fromRGB(60, 140, 200) or (isDead and Color3.fromRGB(50, 40, 45) or Color3.fromRGB(45, 65, 50))
+            local stroke = Instance.new("UIStroke", card)
+            stroke.Thickness = 1
 
-        -- Иконка статуса
-        local statusIcon = Instance.new("TextLabel")
-        statusIcon.Size = UDim2.new(0, 18, 1, 0)
-        statusIcon.Position = UDim2.new(0, 4, 0, 0)
-        statusIcon.BackgroundTransparency = 1
-        statusIcon.Text = isDead and "💀" or "🟢"
-        statusIcon.TextSize = 11
-        statusIcon.Parent = card
+            local statusIcon = Instance.new("TextLabel")
+            statusIcon.Size = UDim2.new(0, 18, 1, 0)
+            statusIcon.Position = UDim2.new(0, 4, 0, 0)
+            statusIcon.BackgroundTransparency = 1
+            statusIcon.TextSize = 11
+            statusIcon.Parent = card
 
-        -- Имя игрока
-        local nameLabel = Instance.new("TextLabel")
-        nameLabel.Size = UDim2.new(1, -26, 0, 14)
-        nameLabel.Position = UDim2.new(0, 24, 0, 2)
-        nameLabel.BackgroundTransparency = 1
-        nameLabel.Text = pName .. (isMe and " (ВЫ)" or "")
-        nameLabel.TextColor3 = isDead and Color3.fromRGB(150, 150, 150) or (isMe and Color3.fromRGB(100, 220, 255) or Color3.fromRGB(235, 235, 245))
-        nameLabel.Font = Enum.Font.GothamBold
-        nameLabel.TextSize = 10
-        nameLabel.TextXAlignment = Enum.TextXAlignment.Left
-        nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
-        nameLabel.Parent = card
+            local nameLabel = Instance.new("TextLabel")
+            nameLabel.Size = UDim2.new(1, -26, 0, 14)
+            nameLabel.Position = UDim2.new(0, 24, 0, 2)
+            nameLabel.BackgroundTransparency = 1
+            nameLabel.Font = Enum.Font.GothamBold
+            nameLabel.TextSize = 10
+            nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+            nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+            nameLabel.Parent = card
 
-        -- Роль и монеты
+            local subLabel = Instance.new("TextLabel")
+            subLabel.Size = UDim2.new(1, -26, 0, 12)
+            subLabel.Position = UDim2.new(0, 24, 0, 16)
+            subLabel.BackgroundTransparency = 1
+            subLabel.Font = Enum.Font.Gotham
+            subLabel.TextSize = 9
+            subLabel.TextXAlignment = Enum.TextXAlignment.Left
+            subLabel.Parent = card
+
+            card.Parent = PlayersScroll
+
+            item = {
+                card = card,
+                stroke = stroke,
+                statusIcon = statusIcon,
+                nameLabel = nameLabel,
+                subLabel = subLabel,
+            }
+            playerCardPool[pName] = item
+        end
+
+        item.card.Visible = true
+        item.card.LayoutOrder = idx
+        item.card.BackgroundColor3 = isMe and Color3.fromRGB(24, 38, 52) or Color3.fromRGB(20, 22, 30)
+        item.stroke.Color = isMe and Color3.fromRGB(60, 140, 200) or (isDead and Color3.fromRGB(50, 40, 45) or Color3.fromRGB(45, 65, 50))
+
+        item.statusIcon.Text = isDead and "💀" or "🟢"
+        item.nameLabel.Text = pName .. (isMe and " (ВЫ)" or "")
+        item.nameLabel.TextColor3 = isDead and Color3.fromRGB(150, 150, 150) or (isMe and Color3.fromRGB(100, 220, 255) or Color3.fromRGB(235, 235, 245))
+
         local roleColor = Color3.fromRGB(170, 170, 180)
         if role == "Murderer" or role == "Zombie" then
             roleColor = Color3.fromRGB(255, 90, 90)
@@ -1304,16 +1424,15 @@ local function DoUpdatePlayersPanel()
             roleColor = Color3.fromRGB(100, 230, 130)
         end
 
-        local subLabel = Instance.new("TextLabel")
-        subLabel.Size = UDim2.new(1, -26, 0, 12)
-        subLabel.Position = UDim2.new(0, 24, 0, 16)
-        subLabel.BackgroundTransparency = 1
-        subLabel.Text = string.format("%s | 🪙 %d", role, coins)
-        subLabel.TextColor3 = roleColor
-        subLabel.Font = Enum.Font.Gotham
-        subLabel.TextSize = 9
-        subLabel.TextXAlignment = Enum.TextXAlignment.Left
-        subLabel.Parent = card
+        item.subLabel.Text = string.format("%s | 🪙 %d", role, coins)
+        item.subLabel.TextColor3 = roleColor
+    end
+
+    -- Скрываем карточки тех, кого больше нет в раунде
+    for pName, item in pairs(playerCardPool) do
+        if not activeNames[pName] then
+            item.card.Visible = false
+        end
     end
 
     LblPlayersSummary.Text = string.format("Живых: %d | Погибло: %d | Всего: %d", aliveCount, deadCount, totalInRound)
